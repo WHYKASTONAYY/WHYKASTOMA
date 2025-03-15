@@ -326,8 +326,8 @@ def get_jwt_token():
     """Fetch a fresh JWT token from NOWPayments API."""
     url = "https://api.nowpayments.io/v1/auth"
     payload = {
-        "email": os.environ.get("NOWPAYMENTS_EMAIL", "goblingoblinu@gmail.com"),
-        "password": os.environ.get("NOWPAYMENTS_PASSWORD", "Melynaslaiskas1")
+        "email": os.environ.get("NOWPAYMENTS_EMAIL"),
+        "password": os.environ.get("NOWPAYMENTS_PASSWORD")
     }
     headers = {"Content-Type": "application/json"}
     try:
