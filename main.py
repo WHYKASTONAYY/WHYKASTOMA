@@ -34,11 +34,11 @@ logger = logging.getLogger(__name__)
 nest_asyncio.apply()
 
 # Bot configuration
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "8118951743:AAHT6bOYhmzl98fyKXvkfvez6refrn5dOlU")
-NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY", "86WDA8Y-A7V4Y5Y-N0ETC4V-JXB03GA")
-WEBHOOK_URL = os.environ.get("WEBHOOK_URL", "https://casino-bot-41de.onrender.com")
-BOT_USERNAME = os.environ.get("BOT_USERNAME", "YourBotUsername")
-OWNER_ID = int(os.environ.get("OWNER_ID", "7054186974"))
+BOT_TOKEN = os.environ.get("BOT_TOKEN")
+NOWPAYMENTS_API_KEY = os.environ.get("NOWPAYMENTS_API_KEY")
+WEBHOOK_URL = os.environ.get("WEBHOOK_URL")
+BOT_USERNAME = os.environ.get("BOT_USERNAME")
+OWNER_ID = int(os.environ.get("OWNER_ID"))
 
 # Price cache (currency -> (price, timestamp))
 price_cache = {}
