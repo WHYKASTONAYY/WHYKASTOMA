@@ -1,5 +1,4 @@
-
-   import asyncio
+import asyncio
 import sqlite3
 import nest_asyncio
 import requests
@@ -150,10 +149,11 @@ def get_currency_to_usd_price(currency):
 
         currency_map = {
             'sol': 'solana',
-            'trx': 'tron',
-            'usdt_eth': 'tether',
+            'btc': 'bitcoin',
             'eth': 'ethereum',
-            'ltc': 'litecoin'
+            'ltc': 'litecoin',
+            'trx': 'tron',
+            'usdttrc20': 'tether'
         }
         url = f"https://api.coingecko.com/api/v3/simple/price?ids={currency_map[currency]}&vs_currencies=usd"
         response = requests.get(url)
@@ -435,10 +435,11 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "💳 Deposit\n\nChoose your preferred deposit method"
             keyboard = [
                 [InlineKeyboardButton("SOLANA", callback_data="deposit_sol"),
-                 InlineKeyboardButton("TRON", callback_data="deposit_trx")],
-                [InlineKeyboardButton("USDT ETH", callback_data="deposit_usdt_eth"),
-                 InlineKeyboardButton("ETH", callback_data="deposit_eth")],
-                [InlineKeyboardButton("LTC", callback_data="deposit_ltc")]
+                 InlineKeyboardButton("BTC", callback_data="deposit_btc")],
+                [InlineKeyboardButton("ETH", callback_data="deposit_eth"),
+                 InlineKeyboardButton("LTC", callback_data="deposit_ltc")],
+                [InlineKeyboardButton("TRON", callback_data="deposit_trx"),
+                 InlineKeyboardButton("USDT TRON", callback_data="deposit_usdttrc20")]
             ]
             reply_markup = InlineKeyboardMarkup(keyboard)
             await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
