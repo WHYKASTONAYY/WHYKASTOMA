@@ -1,4 +1,5 @@
-import asyncio
+
+    import asyncio
 import sqlite3
 import nest_asyncio
 import requests
@@ -12,6 +13,7 @@ from decimal import Decimal  # For precise monetary calculations
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask, request, Response
+from requests.exceptions import HTTPError
 
 # Game imports (replace with your actual game modules)
 from dice import dice_command, dice_button_handler, dice_text_handler
@@ -46,6 +48,16 @@ CACHE_EXPIRATION_MINUTES = 10  # Increased to reduce API calls
 
 # Fee adjustment percentage to cover NOWPayments fees (e.g., 1.5%)
 FEE_ADJUSTMENT = 0.015
+
+# Currency mapping for NOWPayments
+CURRENCY_MAP = {
+    'sol': 'sol',
+    'usdt_trx': 'usdttrc20',  # Tron-based USDT
+    'usdt_eth': 'usdt',       # Ethereum-based USDT
+    'btc': 'btc',
+    'eth': 'eth',
+    'ltc': 'ltc'
+}
 
 # Database functions
 def init_db():
@@ -103,22 +115,47 @@ def get_user_by_username(username):
         return result[0] if result else None
 
 # Helper functions
+def get_minimum_amount(currency):
+    """Fetch the minimum deposit amount for a given currency from NOWPayments."""
+    try:
+        url = "https://api.nowpayments.io/v1/min-amount"
+        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
+        params = {"currency_from": currency}
+        response = requests.get(url, headers=headers, params=params)
+        response.raise_for_status()
+        data = response.json()
+        min_amount = float(data.get("min_amount", 0))
+        if min_amount == 0:
+            logger.warning(f"No min_amount returned for {currency}, using fallback: 0.0001")
+            return 0.0001  # Fallback in case API fails to provide a value
+        logger.info(f"Minimum amount for {currency}: {min_amount}")
+        return min_amount
+    except Exception as e:
+        logger.error(f"Failed to fetch minimum amount for {currency}: {e}")
+        return 0.0001  # Fallback minimum
+
 def create_deposit_payment(user_id, currency='ltc'):
     try:
-        min_deposit_usd = 1.0
-        currency_price = get_currency_to_usd_price(currency)
-        min_deposit_currency = min_deposit_usd / currency_price
+        # Map the currency to NOWPayments' expected code
+        now_currency = CURRENCY_MAP.get(currency, currency)
         
+        # Fetch the minimum amount in the crypto's native unit
+        min_deposit_currency = get_minimum_amount(now_currency)
+        
+        # Get the USD price to convert to USD for the API
+        currency_price = get_currency_to_usd_price(currency)
+        min_deposit_usd = min_deposit_currency * currency_price
+
         url = "https://api.nowpayments.io/v1/payment"
         headers = {"x-api-key": NOWPAYMENTS_API_KEY}
         payload = {
-            "price_amount": min_deposit_currency,
-            "price_currency": currency,
-            "pay_currency": currency,
+            "price_amount": float(min_deposit_usd),  # Amount in USD
+            "price_currency": "usd",                 # Request in USD
+            "pay_currency": now_currency,            # Pay in the selected crypto
             "ipn_callback_url": f"{WEBHOOK_URL}/webhook",
             "order_id": f"deposit_{user_id}_{int(time.time())}",
         }
-        logger.info(f"Sending deposit request for user_id: {user_id}")
+        logger.info(f"Sending deposit request for user_id: {user_id} with {min_deposit_usd} USD in {now_currency}")
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -127,10 +164,15 @@ def create_deposit_payment(user_id, currency='ltc'):
             raise ValueError("Invalid response from NOWPayments")
         logger.info(f"Received deposit response for user_id: {user_id}")
         return data
-    except requests.exceptions.RequestException as e:
+    except HTTPError as e:
         logger.error(f"API request failed: {e}")
         if e.response is not None:
             logger.error(f"Response content: {e.response.text}")
+            error_data = e.response.json()
+            if error_data.get("code") == "AMOUNT_MINIMAL_ERROR":
+                raise Exception(f"Minimum deposit amount for {currency.upper()} is higher than {min_deposit_usd:.2f} USD")
+            elif error_data.get("code") == "CURRENCY_UNAVAILABLE":
+                raise Exception(f"{currency.upper()} is currently unavailable. Please try another currency.")
         raise
     except Exception as e:
         logger.error(f"Deposit creation failed: {e}")
@@ -451,24 +493,20 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             payment_id = payment_data['payment_id']
             expiration_time = payment_data.get('expiration_estimate_date', '')
             expires_in = format_expiration_time(expiration_time) if expiration_time else "1:00:00"
+            pay_amount = float(payment_data.get('pay_amount', 0))
             add_pending_deposit(payment_id, user_id, currency)
             text = (
-                f"To top up your balance, transfer the desired amount to this {currency.upper()} address.\n\n"
+                f"To top up your balance, transfer at least {pay_amount:.8f} {currency.upper()} to this address.\n\n"
                 "Please note:\n"
                 "1. The deposit address is temporary and is only issued for 1 hour. A new one will be created after that.\n"
                 "2. One address accepts only one payment.\n\n"
-                f"{currency.upper()} address: {address}\n"
+                f"{currency.upper()} address: `{address}`\n"
                 f"Expires in: {expires_in}"
             )
-            await context.bot.send_message(chat_id=chat_id, text=text)
+            await context.bot.send_message(chat_id=chat_id, text=text, parse_mode='Markdown')
         except Exception as e:
             error_msg = str(e)
-            if "401" in error_msg:
-                await context.bot.send_message(chat_id=chat_id, text="API key is invalid. Please contact support.")
-            elif "400" in error_msg:
-                await context.bot.send_message(chat_id=chat_id, text="Invalid request. Please try again later.")
-            else:
-                await context.bot.send_message(chat_id=chat_id, text=f"Failed to generate deposit address: {error_msg}. Try again or contact support.")
+            await context.bot.send_message(chat_id=chat_id, text=f"Failed to generate deposit address: {error_msg}. Try again or contact support.")
     elif data == "withdraw":
         if update.effective_chat.type != 'private':
             await context.bot.send_message(chat_id=chat_id, text=f"Please start a private conversation with me to proceed with the withdrawal: t.me/{BOT_USERNAME}")
