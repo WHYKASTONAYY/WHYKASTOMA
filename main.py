@@ -103,11 +103,31 @@ def get_user_by_username(username):
         return result[0] if result else None
 
 # Helper functions
-def create_deposit_payment(user_id, currency='ltc'):
+def get_min_deposit_amount(currency):
+    """Fetch the minimum deposit amount for a given cryptocurrency from NOWPayments."""
     try:
-        min_deposit_usd = 1.0
-        currency_price = get_currency_to_usd_price(currency)
-        min_deposit_currency = min_deposit_usd / currency_price
+        url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}&currency_to=usd"
+        headers = {"x-api-key": NOWPAYMENTS_API_KEY}
+        response = requests.get(url, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+        if 'min_amount' in data:
+            return float(data['min_amount'])
+        else:
+            logger.error(f"No min_amount in response: {data}")
+            return None
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to fetch min deposit amount: {e}")
+        if e.response is not None:
+            logger.error(f"Response content: {e.response.text}")
+        return None
+
+def create_deposit_payment(user_id, currency='ltc'):
+    """Create a deposit payment using the minimum amount required by NOWPayments."""
+    try:
+        min_deposit_currency = get_min_deposit_amount(currency)
+        if min_deposit_currency is None:
+            raise ValueError("Unable to fetch minimum deposit amount")
         
         url = "https://api.nowpayments.io/v1/payment"
         headers = {"x-api-key": NOWPAYMENTS_API_KEY}
@@ -118,7 +138,7 @@ def create_deposit_payment(user_id, currency='ltc'):
             "ipn_callback_url": f"{WEBHOOK_URL}/webhook",
             "order_id": f"deposit_{user_id}_{int(time.time())}",
         }
-        logger.info(f"Sending deposit request for user_id: {user_id}")
+        logger.info(f"Sending deposit request for user_id: {user_id} with min_amount: {min_deposit_currency}")
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -177,6 +197,7 @@ def get_currency_to_usd_price(currency):
         return 1.0
 
 def format_expiration_time(expiration_date_str):
+    """Format the expiration time for display."""
     try:
         expiration_time = datetime.strptime(expiration_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
         now = datetime.utcnow()
@@ -461,6 +482,8 @@ async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 f"Expires in: {expires_in}"
             )
             await context.bot.send_message(chat_id=chat_id, text=text)
+        except ValueError as ve:
+            await context.bot.send_message(chat_id=chat_id, text=str(ve))
         except Exception as e:
             error_msg = str(e)
             if "401" in error_msg:
