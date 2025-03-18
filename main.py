@@ -82,7 +82,7 @@ def add_pending_deposit(payment_id, user_id, currency):
         c.execute("INSERT INTO pending_deposits (payment_id, user_id, currency) VALUES (?, ?, ?)",
                   (payment_id, user_id, currency))
         conn.commit()
-        logger.info(f"Added pending deposit: payment_id={payment_id}, user_id={user_id}, currency={currency}")  # Added logging
+        logger.info(f"Added pending deposit: payment_id={payment_id}, user_id={user_id}, currency={currency}")
 
 def get_pending_deposit(payment_id):
     with sqlite3.connect('users.db') as conn:
@@ -106,7 +106,8 @@ def get_user_by_username(username):
 # Helper functions
 def get_min_deposit_amount(currency):
     try:
-        url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}¤cy_to=usd"
+        url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}&currency_to=usd"
+        logger.info(f"Fetching min deposit amount from URL: {url}")  # Added for debugging
         headers = {"x-api-key": NOWPAYMENTS_API_KEY}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
