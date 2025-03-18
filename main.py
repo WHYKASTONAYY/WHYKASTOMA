@@ -13,7 +13,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, MessageHandler, filters, ContextTypes
 from flask import Flask, request, Response
 
-# Game imports (replace with your actual game modules)
+# Game imports
 from dice import dice_command, dice_button_handler, dice_text_handler
 from tower import tower_command, tower_button_handler
 from basketball import basketball_command, basketball_button_handler
@@ -47,7 +47,7 @@ CACHE_EXPIRATION_MINUTES = 10  # Increased to reduce API calls
 # Fee adjustment percentage to cover NOWPayments fees (e.g., 1.5%)
 FEE_ADJUSTMENT = 0.015
 
-# Database functions
+# Database functions (unchanged)
 def init_db():
     with sqlite3.connect('users.db') as conn:
         c = conn.cursor()
@@ -120,7 +120,7 @@ def set_house_balance(new_balance):
             c.execute("INSERT INTO house_balance (id, balance) VALUES (1, ?)", (float(new_balance),))
         conn.commit()
 
-# Helper functions
+# Helper functions (unchanged)
 def create_deposit_payment(user_id, currency='ltc'):
     try:
         min_deposit_usd = 1.0
@@ -155,7 +155,6 @@ def create_deposit_payment(user_id, currency='ltc'):
         raise
 
 def get_currency_to_usd_price(currency):
-    """Fetch the USD price of a cryptocurrency with rate limit handling."""
     try:
         if currency in price_cache:
             price, timestamp = price_cache[currency]
@@ -205,7 +204,7 @@ def format_expiration_time(expiration_date_str):
     except:
         return "1:00:00"
 
-# Generic game command handler with house balance update
+# Generic game command handler with house balance update (unchanged)
 def create_game_handler(game_name, game_func):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
@@ -244,7 +243,6 @@ def create_game_handler(game_name, game_func):
             await context.bot.send_message(chat_id=chat_id, text="Insufficient balance.")
             return
         context.user_data['bet_amount'] = bet_amount
-        # Add bet amount to house balance if in a group chat
         if chat_type != 'private':
             current_house_balance = get_house_balance()
             set_house_balance(current_house_balance + bet_amount)
@@ -252,7 +250,7 @@ def create_game_handler(game_name, game_func):
         await game_func(update, context)
     return handler
 
-# Tip command handler
+# Tip command handler (unchanged)
 async def tip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
@@ -287,7 +285,7 @@ async def tip_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     update_user_balance(recipient_id, recipient_balance + amount)
     await context.bot.send_message(chat_id=chat_id, text=f"Successfully tipped ${amount:.2f} to @{username}.")
 
-# Add balance command handler (owner only)
+# Owner-only command handlers (unchanged)
 async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="You are not authorized to use this command.")
@@ -313,7 +311,6 @@ async def add_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE
     update_user_balance(target_user_id, new_balance)
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Added ${amount:.2f} to @{username}'s balance. New balance: ${new_balance:.2f}")
 
-# Remove balance command handler (owner only)
 async def remove_balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="You are not authorized to use this command.")
@@ -340,7 +337,7 @@ async def remove_balance_command(update: Update, context: ContextTypes.DEFAULT_T
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Removed ${amount:.2f} from @{username}'s balance. New balance: ${new_balance:.2f}")
     logger.info(f"Admin removed ${amount:.2f} from @{username}'s balance. New balance: ${new_balance:.2f}")
 
-# House balance command handlers
+# House balance commands (unchanged)
 async def add_house_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID:
         await context.bot.send_message(chat_id=update.effective_chat.id, text="You are not authorized to use this command.")
@@ -388,28 +385,20 @@ async def housebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     balance = get_house_balance()
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"House balance: ${balance:.2f}")
 
-# Withdrawal Helper Functions
+# Withdrawal helper functions (unchanged)
 def is_valid_ltc_address(address):
-    """Validate Litecoin address format."""
     pattern = r'^(L|M|ltc1)[a-zA-Z0-9]{25,40}$'
     return re.match(pattern, address) is not None
 
 def get_jwt_token():
-    """Fetch a fresh JWT token from NOWPAYMENTS API with enhanced logging."""
     url = "https://api.nowpayments.io/v1/auth"
     email = os.environ.get("NOWPAYMENTS_EMAIL")
     password = os.environ.get("NOWPAYMENTS_PASSWORD")
-    
     if not email or not password:
         logger.error("NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD not set in environment variables.")
         raise ValueError("Missing NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD")
-    
-    payload = {
-        "email": email,
-        "password": password
-    }
+    payload = {"email": email, "password": password}
     headers = {"Content-Type": "application/json"}
-    
     try:
         logger.info(f"Attempting to authenticate with email: {email}")
         response = requests.post(url, json=payload, headers=headers)
@@ -430,7 +419,6 @@ def get_jwt_token():
         raise
 
 def initiate_payout(currency, amount, address):
-    """Initiate a payout via NOWPayments API with proper authentication and payload."""
     url = "https://api.nowpayments.io/v1/payout"
     try:
         token = get_jwt_token()
@@ -461,7 +449,7 @@ def initiate_payout(currency, amount, address):
             logger.error(f"Response content: {e.response.text}")
         return {"status": "error", "message": str(e)}
 
-# Command handlers
+# Command handlers (unchanged)
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     username = update.effective_user.username or update.effective_user.first_name
@@ -602,7 +590,19 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Unhandled update: {update}")
 
-# Flask app for webhooks
+# Game ownership check wrapper
+def with_game_ownership_check(handler, game_key):
+    async def wrapped_handler(update, context):
+        query = update.callback_query
+        await query.answer()
+        game = context.user_data.get(game_key)
+        if not game or game['message_id'] != query.message.message_id:
+            await query.answer("This is not your game!")
+            return
+        await handler(update, context)
+    return wrapped_handler
+
+# Flask app for webhooks (unchanged)
 app = Flask(__name__)
 
 @app.route('/telegram-webhook', methods=['POST'])
@@ -684,18 +684,18 @@ async def main():
     application.add_handler(CommandHandler("removehouse456", remove_house_command))
     application.add_handler(CommandHandler("housebal", housebal_command))
 
-    # Register game button handlers FIRST
-    application.add_handler(CallbackQueryHandler(dice_button_handler, pattern="^dice_"))
-    application.add_handler(CallbackQueryHandler(tower_button_handler, pattern="^tower_"))
-    application.add_handler(CallbackQueryHandler(basketball_button_handler, pattern="^basketball_"))
-    application.add_handler(CallbackQueryHandler(bowling_button_handler, pattern="^bowl_"))
-    application.add_handler(CallbackQueryHandler(coin_button_handler, pattern="^coin_"))
-    application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
-    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^tower_"))
-    application.add_handler(CallbackQueryHandler(mine_button_handler, pattern="^mine_"))
-    application.add_handler(CallbackQueryHandler(predict_button_handler, pattern="^predict_"))
-    application.add_handler(CallbackQueryHandler(roulette_button_handler, pattern="^roul_"))
-    application.add_handler(CallbackQueryHandler(slots_button_handler, pattern="^slots_"))
+    # Register game button handlers with ownership check
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dice_button_handler, 'dice_game'), pattern="^dice_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, 'basketball_game'), pattern="^basketball_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(bowling_button_handler, 'bowling_game'), pattern="^bowl_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, 'coin_game'), pattern="^coin_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dart_button_handler, 'dart_game'), pattern="^dart_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(football_button_handler, 'football_game'), pattern="^football_"))  # Fixed pattern typo
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(mine_button_handler, 'mine_game'), pattern="^mine_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(predict_button_handler, 'predict_game'), pattern="^predict_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(roulette_button_handler, 'roulette_game'), pattern="^roul_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(slots_button_handler, 'slots_game'), pattern="^slots_"))
 
     # Then, register the general button handler
     application.add_handler(CallbackQueryHandler(button_handler))
