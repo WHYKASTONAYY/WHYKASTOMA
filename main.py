@@ -556,22 +556,32 @@ def nowpayments_webhook():
     data = request.json
     logger.info(f"NOWPayments Webhook received: {data}")
     if data.get('payment_status') == 'finished':
-        payment_id = data['payment_id']
+        payment_id = data.get('payment_id')
         amount_paid = float(data.get('actually_paid', data.get('pay_amount', 0)))
         currency = data.get('pay_currency')
         if amount_paid > 0:
             deposit = get_pending_deposit(payment_id)
             if deposit:
-                user_id, _ = deposit
+                user_id, deposit_currency = deposit
                 try:
+                    # Validate currency matches expected deposit currency
+                    if currency.lower() != deposit_currency.lower():
+                        logger.warning(f"Currency mismatch for payment {payment_id}: expected {deposit_currency}, got {currency}")
+                        return Response(status=200)
+                    # Adjust for fees and convert to USD
                     adjusted_amount = amount_paid * (1 - FEE_ADJUSTMENT)
                     crypto_price_usd = get_currency_to_usd_price(currency)
+                    if crypto_price_usd == 0:
+                        raise ValueError(f"Failed to fetch {currency} price")
                     usd_amount = Decimal(str(adjusted_amount * crypto_price_usd)).quantize(Decimal('0.01'))
+                    # Update user balance
                     current_balance = get_user_balance(user_id)
                     new_balance = current_balance + usd_amount
                     update_user_balance(user_id, new_balance)
+                    # Remove the pending deposit
                     remove_pending_deposit(payment_id)
-                    logger.info(f"Processing deposit: {amount_paid} {currency} (adjusted to {adjusted_amount}) = ${usd_amount}")
+                    logger.info(f"Deposit processed: {amount_paid} {currency} (adjusted to {adjusted_amount}) = ${usd_amount} for user {user_id}")
+                    # Send confirmation message
                     asyncio.run_coroutine_threadsafe(
                         app.bot.send_message(
                             chat_id=user_id,
@@ -581,7 +591,17 @@ def nowpayments_webhook():
                         loop
                     )
                 except Exception as e:
-                    logger.error(f"Failed to process deposit: {e}")
+                    logger.error(f"Failed to process deposit for payment {payment_id}: {e}")
+                    # Notify user of the issue
+                    asyncio.run_coroutine_threadsafe(
+                        app.bot.send_message(
+                            chat_id=user_id,
+                            text="⚠️ There was an issue processing your deposit. Please contact support."
+                        ),
+                        loop
+                    )
+            else:
+                logger.warning(f"No pending deposit found for payment {payment_id}")
     return Response(status=200)
 
 def run_loop(loop):
@@ -626,7 +646,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(bowling_button_handler, pattern="^bowl_"))
     application.add_handler(CallbackQueryHandler(coin_button_handler, pattern="^coin_"))
     application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
-    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^tower_"))
+    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^football_"))  # Fixed pattern
     application.add_handler(CallbackQueryHandler(mine_button_handler, pattern="^mine_"))
     application.add_handler(CallbackQueryHandler(predict_button_handler, pattern="^predict_"))
     application.add_handler(CallbackQueryHandler(roulette_button_handler, pattern="^roul_"))
