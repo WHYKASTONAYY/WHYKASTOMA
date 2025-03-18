@@ -44,7 +44,7 @@ OWNER_ID = int(os.environ.get("OWNER_ID"))
 price_cache = {}
 CACHE_EXPIRATION_MINUTES = 10  # Increased to reduce API calls
 
-# Fee adjustment percentage to cover NOWPayments fees (e.g., 1.5%)
+# Fee adjustment percentage to cover NOWPayments fees (1.5%)
 FEE_ADJUSTMENT = 0.015
 
 # Database functions
@@ -82,6 +82,7 @@ def add_pending_deposit(payment_id, user_id, currency):
         c.execute("INSERT INTO pending_deposits (payment_id, user_id, currency) VALUES (?, ?, ?)",
                   (payment_id, user_id, currency))
         conn.commit()
+        logger.info(f"Added pending deposit: payment_id={payment_id}, user_id={user_id}, currency={currency}")  # Added logging
 
 def get_pending_deposit(payment_id):
     with sqlite3.connect('users.db') as conn:
@@ -104,9 +105,8 @@ def get_user_by_username(username):
 
 # Helper functions
 def get_min_deposit_amount(currency):
-    """Fetch the minimum deposit amount for a given cryptocurrency from NOWPayments."""
     try:
-        url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}&currency_to=usd"
+        url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}¤cy_to=usd"
         headers = {"x-api-key": NOWPAYMENTS_API_KEY}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
@@ -123,7 +123,6 @@ def get_min_deposit_amount(currency):
         return None
 
 def create_deposit_payment(user_id, currency='ltc'):
-    """Create a deposit payment using the minimum amount required by NOWPayments."""
     try:
         min_deposit_currency = get_min_deposit_amount(currency)
         if min_deposit_currency is None:
@@ -157,7 +156,6 @@ def create_deposit_payment(user_id, currency='ltc'):
         raise
 
 def get_currency_to_usd_price(currency):
-    """Fetch the USD price of a cryptocurrency with rate limit handling."""
     try:
         if currency in price_cache:
             price, timestamp = price_cache[currency]
@@ -197,7 +195,6 @@ def get_currency_to_usd_price(currency):
         return 1.0
 
 def format_expiration_time(expiration_date_str):
-    """Format the expiration time for display."""
     try:
         expiration_time = datetime.strptime(expiration_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
         now = datetime.utcnow()
@@ -339,12 +336,10 @@ async def remove_balance_command(update: Update, context: ContextTypes.DEFAULT_T
 
 # Withdrawal Helper Functions
 def is_valid_ltc_address(address):
-    """Validate Litecoin address format."""
     pattern = r'^(L|M|ltc1)[a-zA-Z0-9]{25,40}$'
     return re.match(pattern, address) is not None
 
 def get_jwt_token():
-    """Fetch a fresh JWT token from NOWPayments API."""
     url = "https://api.nowpayments.io/v1/auth"
     payload = {
         "email": os.environ.get("NOWPAYMENTS_EMAIL"),
@@ -368,10 +363,9 @@ def get_jwt_token():
         raise
 
 def initiate_payout(currency, amount, address):
-    """Initiate a payout via NOWPayments API with proper authentication and payload."""
     url = "https://api.nowpayments.io/v1/payout"
     try:
-        token = get_jwt_token()  # Fetch a fresh token
+        token = get_jwt_token()
         headers = {
             "x-api-key": NOWPAYMENTS_API_KEY,
             "Authorization": f"Bearer {token}",
@@ -553,56 +547,58 @@ def telegram_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def nowpayments_webhook():
-    data = request.json
-    logger.info(f"NOWPayments Webhook received: {data}")
-    if data.get('payment_status') == 'finished':
+    # Log all incoming requests to debug delivery
+    logger.info(f"Received request to /webhook: method={request.method}, headers={request.headers}, data={request.data}")
+    try:
+        data = request.json
+        logger.info(f"NOWPayments Webhook received: {data}")
+        
+        payment_status = data.get('payment_status')
         payment_id = data.get('payment_id')
         amount_paid = float(data.get('actually_paid', data.get('pay_amount', 0)))
         currency = data.get('pay_currency')
-        if amount_paid > 0:
+        
+        logger.info(f"Processing webhook for payment_id: {payment_id}, status: {payment_status}")
+        
+        if payment_status == 'finished' and amount_paid > 0:
             deposit = get_pending_deposit(payment_id)
             if deposit:
                 user_id, deposit_currency = deposit
-                try:
-                    # Validate currency matches expected deposit currency
-                    if currency.lower() != deposit_currency.lower():
-                        logger.warning(f"Currency mismatch for payment {payment_id}: expected {deposit_currency}, got {currency}")
-                        return Response(status=200)
-                    # Adjust for fees and convert to USD
-                    adjusted_amount = amount_paid * (1 - FEE_ADJUSTMENT)
-                    crypto_price_usd = get_currency_to_usd_price(currency)
-                    if crypto_price_usd == 0:
-                        raise ValueError(f"Failed to fetch {currency} price")
-                    usd_amount = Decimal(str(adjusted_amount * crypto_price_usd)).quantize(Decimal('0.01'))
-                    # Update user balance
-                    current_balance = get_user_balance(user_id)
-                    new_balance = current_balance + usd_amount
-                    update_user_balance(user_id, new_balance)
-                    # Remove the pending deposit
-                    remove_pending_deposit(payment_id)
-                    logger.info(f"Deposit processed: {amount_paid} {currency} (adjusted to {adjusted_amount}) = ${usd_amount} for user {user_id}")
-                    # Send confirmation message
-                    asyncio.run_coroutine_threadsafe(
-                        app.bot.send_message(
-                            chat_id=user_id,
-                            text=f"✅ Deposit of {amount_paid} {currency.upper()} received! "
-                                 f"Credited ${usd_amount:.2f} after fees. New balance: ${new_balance:.2f}"
-                        ),
-                        loop
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to process deposit for payment {payment_id}: {e}")
-                    # Notify user of the issue
-                    asyncio.run_coroutine_threadsafe(
-                        app.bot.send_message(
-                            chat_id=user_id,
-                            text="⚠️ There was an issue processing your deposit. Please contact support."
-                        ),
-                        loop
-                    )
+                if currency.lower() != deposit_currency.lower():
+                    logger.warning(f"Currency mismatch for payment {payment_id}: expected {deposit_currency}, got {currency}")
+                    return Response(status=200)
+                
+                # Process deposit
+                adjusted_amount = amount_paid * (1 - FEE_ADJUSTMENT)
+                crypto_price_usd = get_currency_to_usd_price(currency)
+                if crypto_price_usd == 0:
+                    raise ValueError(f"Failed to fetch {currency} price")
+                usd_amount = Decimal(str(adjusted_amount * crypto_price_usd)).quantize(Decimal('0.01'))
+                
+                current_balance = get_user_balance(user_id)
+                new_balance = current_balance + usd_amount
+                update_user_balance(user_id, new_balance)
+                
+                remove_pending_deposit(payment_id)
+                logger.info(f"Deposit processed: {amount_paid} {currency} (adjusted to {adjusted_amount}) = ${usd_amount} for user {user_id}")
+                
+                # Send confirmation message
+                asyncio.run_coroutine_threadsafe(
+                    app.bot.send_message(
+                        chat_id=user_id,
+                        text=f"✅ Deposit of {amount_paid} {currency.upper()} received! "
+                             f"Credited ${usd_amount:.2f} after fees. New balance: ${new_balance:.2f}"
+                    ),
+                    loop
+                )
             else:
                 logger.warning(f"No pending deposit found for payment {payment_id}")
-    return Response(status=200)
+        else:
+            logger.info(f"Webhook received but not processed: status={payment_status}, amount_paid={amount_paid}")
+    except Exception as e:
+        logger.error(f"Error processing webhook: {e}")
+        return Response(status=400)  # Indicate error to NOWPayments for potential retry
+    return Response(status=200)  # Acknowledge receipt
 
 def run_loop(loop):
     asyncio.set_event_loop(loop)
@@ -646,7 +642,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(bowling_button_handler, pattern="^bowl_"))
     application.add_handler(CallbackQueryHandler(coin_button_handler, pattern="^coin_"))
     application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
-    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^football_"))  # Fixed pattern
+    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^football_"))
     application.add_handler(CallbackQueryHandler(mine_button_handler, pattern="^mine_"))
     application.add_handler(CallbackQueryHandler(predict_button_handler, pattern="^predict_"))
     application.add_handler(CallbackQueryHandler(roulette_button_handler, pattern="^roul_"))
