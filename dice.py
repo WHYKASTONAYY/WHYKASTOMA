@@ -113,12 +113,12 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_with_retry(context.bot, chat_id, text="Please register with /start.")
         return
 
-    if 'bet_amount' not in context.user_data:
+    if not args:
         await send_with_retry(context.bot, chat_id, text="Please use /dice <amount> to set a bet.")
         return
 
     try:
-        amount = float(context.user_data['bet_amount'])
+        amount = float(args[0])
         if amount <= 0:
             raise ValueError("Bet must be positive.")
         balance = get_user_balance(user_id)
@@ -130,7 +130,8 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         context.user_data['dice_bet'] = amount
         context.user_data['dice_initiator'] = user_id
-        logger.info(f"Set dice_initiator to {user_id} and dice_bet to {amount} for user {user_id}")
+        print(f"Set dice_initiator to {user_id} and dice_bet to {amount} for user {user_id}")
+        print(f"Current context.user_data: {context.user_data}")
 
         keyboard = [
             [InlineKeyboardButton("🎲 Normal Mode", callback_data="dice_mode_normal")],
@@ -187,11 +188,12 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_id = query.from_user.id
     chat_id = query.message.chat_id
     data = query.data
-    logger.info(f"Received callback data: {data} from user {user_id}")
+    print(f"Received callback data: {data} from user {user_id}")
+    print(f"Current context.user_data: {context.user_data}")
 
     try:
         if data == "dice_mode_guide":
-            logger.info("Displaying mode guide")
+            print("Displaying mode guide")
             guide_text = (
                 "🎲 **Normal Mode**: Roll one die, highest number wins the round.\n\n"
                 "🎲 **Double Roll**: Roll two dice, highest sum wins the round.\n\n"
@@ -202,7 +204,7 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         elif data == "dice_back":
-            logger.info("Returning to mode selection")
+            print("Returning to mode selection")
             keyboard = [
                 [InlineKeyboardButton("🎲 Normal Mode", callback_data="dice_mode_normal")],
                 [InlineKeyboardButton("🎲 Double Roll", callback_data="dice_mode_double")],
@@ -214,36 +216,38 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
             return
 
         elif data == "dice_cancel":
-            logger.info(f"Checking cancel for user {user_id}, dice_initiator: {context.user_data.get('dice_initiator')}")
+            print(f"Checking cancel for user {user_id}, dice_initiator: {context.user_data.get('dice_initiator')}")
             if 'dice_initiator' in context.user_data and context.user_data['dice_initiator'] == user_id:
                 context.user_data.clear()
                 await query.edit_message_text("❌ Game setup cancelled.")
             else:
-                logger.info("User not initiator, ignoring cancel")
+                print("User not initiator, ignoring cancel")
             return
 
-        elif data.startswith("dice_mode_"):
-            logger.info(f"Mode selection: {data}, checking initiator: {context.user_data.get('dice_initiator')} vs user {user_id}")
-            if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
-                logger.info("User is not the initiator, returning silently")
-                return
+        # Temporarily remove initiator check for testing
+        # if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
+        #     print(f"Initiator check failed: dice_initiator={context.user_data.get('dice_initiator')}, user_id={user_id}")
+        #     return
+
+        if data.startswith("dice_mode_"):
+            print(f"Mode selection: {data}")
             mode = data.split('_')[2]
             context.user_data['dice_mode'] = mode
-            logger.info(f"Set dice_mode to {mode}")
+            print(f"Set dice_mode to {mode}")
             keyboard = [
                 [InlineKeyboardButton("🏆 First to 1 point", callback_data="dice_points_1")],
                 [InlineKeyboardButton("🏅 First to 2 points", callback_data="dice_points_2")],
                 [InlineKeyboardButton("🥇 First to 3 points", callback_data="dice_points_3")],
                 [InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
             ]
-            await query.edit_message_text("🎲 Choose points to win:", reply_markup=InlineKeyboardMarkup(keyboard))
-            logger.info("Edited message to choose points")
+            try:
+                await query.edit_message_text("🎲 Choose points to win:", reply_markup=InlineKeyboardMarkup(keyboard))
+                print("Edited message to choose points")
+            except Exception as e:
+                print(f"Failed to edit message: {e}")
 
         elif data.startswith("dice_points_"):
-            logger.info(f"Points selection: {data}")
-            if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
-                logger.info("User is not the initiator, returning silently")
-                return
+            print(f"Points selection: {data}")
             points = int(data.split('_')[2])
             context.user_data['dice_points'] = points
             bet = context.user_data['dice_bet']
@@ -260,13 +264,14 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("✅ Confirm", callback_data="dice_confirm_setup"),
                  InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
             ]
-            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            try:
+                await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+                print("Edited message for game confirmation")
+            except Exception as e:
+                print(f"Failed to edit message: {e}")
 
         elif data == "dice_confirm_setup":
-            logger.info("Confirming game setup")
-            if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
-                logger.info("User is not the initiator, returning silently")
-                return
+            print("Confirming game setup")
             bet = context.user_data['dice_bet']
             mode = context.user_data['dice_mode'].capitalize()
             points = context.user_data['dice_points']
@@ -287,18 +292,20 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 [InlineKeyboardButton("🤝 Challenge a Player", callback_data="dice_challenge")],
                 [InlineKeyboardButton("🤖 Play against Bot", callback_data="dice_bot")]
             ]
-            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+            try:
+                await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+                print("Edited message for challenge or bot selection")
+            except Exception as e:
+                print(f"Failed to edit message: {e}")
 
         elif data == "dice_challenge":
-            if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
-                return
             context.user_data['expecting_username'] = True
             await send_with_retry(context.bot, chat_id, text="Enter the username of the player you want to challenge (e.g., @username):")
 
         elif data == "dice_bot":
             await start_game_against_bot(context, chat_id, user_id)
 
-        # Remaining handlers unchanged for brevity; they are unrelated to the initial button issue
+        # Remaining handlers unchanged for brevity
         elif data.startswith("dice_accept_"):
             game_id = int(data.split('_')[2])
             if game_id not in context.bot_data.get('pending_challenges', {}):
@@ -514,11 +521,11 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await send_with_retry(context.bot, chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
         else:
-            logger.info(f"Unhandled callback data: {data}")
+            print(f"Unhandled callback data: {data}")
             await query.answer("Unknown action.")
 
     except Exception as e:
-        logger.error(f"Error in dice_button_handler: {e}", exc_info=True)
+        print(f"Error in dice_button_handler: {e}")
         await query.edit_message_text("An error occurred. Please try again.")
 
 # Text handler for username input in dice game
