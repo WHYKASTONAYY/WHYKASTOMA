@@ -107,7 +107,7 @@ def get_user_by_username(username):
 def get_min_deposit_amount(currency):
     try:
         url = f"https://api.nowpayments.io/v1/min-amount?currency_from={currency}&currency_to=usd"
-        logger.info(f"Fetching min deposit amount from URL: {url}")  # Added for debugging
+        logger.info(f"Fetching min deposit amount from URL: {url}")
         headers = {"x-api-key": NOWPAYMENTS_API_KEY}
         response = requests.get(url, headers=headers)
         response.raise_for_status()
@@ -342,12 +342,19 @@ def is_valid_ltc_address(address):
 
 def get_jwt_token():
     url = "https://api.nowpayments.io/v1/auth"
+    email = os.environ.get("NOWPAYMENTS_EMAIL")
+    password = os.environ.get("NOWPAYMENTS_PASSWORD")
+    if not email or not password:
+        logger.error("NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD not set in environment variables.")
+        raise ValueError("Missing NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD")
+    
     payload = {
-        "email": os.environ.get("NOWPAYMENTS_EMAIL"),
-        "password": os.environ.get("NOWPAYMENTS_PASSWORD")
+        "email": email,
+        "password": password
     }
     headers = {"Content-Type": "application/json"}
     try:
+        logger.info(f"Attempting to authenticate with email: {email}")
         response = requests.post(url, json=payload, headers=headers)
         response.raise_for_status()
         data = response.json()
@@ -548,7 +555,6 @@ def telegram_webhook():
 
 @app.route('/webhook', methods=['POST'])
 def nowpayments_webhook():
-    # Log all incoming requests to debug delivery
     logger.info(f"Received request to /webhook: method={request.method}, headers={request.headers}, data={request.data}")
     try:
         data = request.json
@@ -569,7 +575,6 @@ def nowpayments_webhook():
                     logger.warning(f"Currency mismatch for payment {payment_id}: expected {deposit_currency}, got {currency}")
                     return Response(status=200)
                 
-                # Process deposit
                 adjusted_amount = amount_paid * (1 - FEE_ADJUSTMENT)
                 crypto_price_usd = get_currency_to_usd_price(currency)
                 if crypto_price_usd == 0:
@@ -583,7 +588,6 @@ def nowpayments_webhook():
                 remove_pending_deposit(payment_id)
                 logger.info(f"Deposit processed: {amount_paid} {currency} (adjusted to {adjusted_amount}) = ${usd_amount} for user {user_id}")
                 
-                # Send confirmation message
                 asyncio.run_coroutine_threadsafe(
                     app.bot.send_message(
                         chat_id=user_id,
@@ -598,8 +602,8 @@ def nowpayments_webhook():
             logger.info(f"Webhook received but not processed: status={payment_status}, amount_paid={amount_paid}")
     except Exception as e:
         logger.error(f"Error processing webhook: {e}")
-        return Response(status=400)  # Indicate error to NOWPayments for potential retry
-    return Response(status=200)  # Acknowledge receipt
+        return Response(status=400)
+    return Response(status=200)
 
 def run_loop(loop):
     asyncio.set_event_loop(loop)
