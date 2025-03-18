@@ -129,10 +129,6 @@ async def tower_button_handler(update, context):
     data = query.data
     logger.info(f"Handling tower button: {data}")
 
-    if 'tower_game' not in context.user_data:
-        await query.edit_message_text("No active Monkey Tower game!")
-        return
-
     game = context.user_data['tower_game']
     message_id = game['message_id']
     balance = get_user_balance(user_id)
