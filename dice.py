@@ -128,10 +128,16 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if (chat_id, user_id) in context.bot_data.get('user_games', {}):
             await send_with_retry(context.bot, chat_id, text="You are already in a game!")
             return
-        context.user_data['dice_bet'] = amount
-        context.user_data['dice_initiator'] = user_id
-        print(f"Set dice_initiator to {user_id} and dice_bet to {amount} for user {user_id}")
-        print(f"Current context.user_data: {context.user_data}")
+        
+        # Initialize setup state
+        setup = {
+            'initiator': user_id,
+            'bet': amount,
+            'state': 'mode_selection',
+            'message_id': None
+        }
+        context.user_data['dice_setup'] = setup
+        print(f"Set dice_setup: {setup} for user {user_id}")
 
         keyboard = [
             [InlineKeyboardButton("🎲 Normal Mode", callback_data="dice_mode_normal")],
@@ -141,7 +147,9 @@ async def dice_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
              InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_with_retry(context.bot, chat_id, text="🎲 Choose the game mode:", reply_markup=reply_markup)
+        message = await send_with_retry(context.bot, chat_id, text="🎲 Choose the game mode:", reply_markup=reply_markup)
+        setup['message_id'] = message.message_id
+        print(f"Stored message_id: {message.message_id}")
 
     except ValueError as e:
         await send_with_retry(context.bot, chat_id, text=f"Invalid bet amount: {str(e)}. Use a positive number.")
@@ -151,11 +159,12 @@ async def start_game_against_bot(context, chat_id, user_id):
     if (chat_id, user_id) in context.bot_data.get('user_games', {}):
         await send_with_retry(context.bot, chat_id, text="You are already in a game!")
         return
-    bet = context.user_data['dice_bet']
+    setup = context.user_data.get('dice_setup', {})
+    bet = setup['bet']
     mode = context.user_data['dice_mode']
     points = context.user_data['dice_points']
     game_key = (chat_id, user_id, 'bot')
-    context.bot_data.setdefault('games', {})[game_key] = {
+    game = {
         'player1': user_id,
         'player2': 'bot',
         'mode': mode,
@@ -166,8 +175,10 @@ async def start_game_against_bot(context, chat_id, user_id):
         'rolls': {'player1': [], 'player2': []},
         'rolls_needed': 2 if mode == 'double' else 1,
         'roll_count': {'player1': 0, 'player2': 0},
-        'round_number': 1
+        'round_number': 1,
+        'message_id': None
     }
+    context.bot_data.setdefault('games', {})[game_key] = game
     context.bot_data.setdefault('user_games', {})[(chat_id, user_id)] = game_key
     update_user_balance(user_id, get_user_balance(user_id) - bet)
     player1_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player1"
@@ -179,7 +190,9 @@ async def start_game_against_bot(context, chat_id, user_id):
     )
     keyboard = [[InlineKeyboardButton("🎲 Roll Dice (Round 1)", callback_data="dice_roll_1")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await send_with_retry(context.bot, chat_id, text=text, reply_markup=reply_markup)
+    message = await send_with_retry(context.bot, chat_id, text=text, reply_markup=reply_markup)
+    game['message_id'] = message.message_id
+    del context.user_data['dice_setup']  # Clear setup state
 
 # Button handler for dice game
 async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -192,213 +205,133 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     print(f"Current context.user_data: {context.user_data}")
 
     try:
-        if data == "dice_mode_guide":
-            print("Displaying mode guide")
-            guide_text = (
-                "🎲 **Normal Mode**: Roll one die, highest number wins the round.\n\n"
-                "🎲 **Double Roll**: Roll two dice, highest sum wins the round.\n\n"
-                "🎲 **Crazy Mode**: Roll one die, lowest number (inverted: 6=1, 1=6) wins the round."
-            )
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="dice_back")]]
-            await query.edit_message_text(guide_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-            return
+        # Handle setup phase
+        if 'dice_setup' in context.user_data:
+            setup = context.user_data['dice_setup']
+            if setup['initiator'] != user_id or setup['message_id'] != query.message.message_id:
+                await query.answer("This is not your game setup!")
+                return
 
-        elif data == "dice_back":
-            print("Returning to mode selection")
-            keyboard = [
-                [InlineKeyboardButton("🎲 Normal Mode", callback_data="dice_mode_normal")],
-                [InlineKeyboardButton("🎲 Double Roll", callback_data="dice_mode_double")],
-                [InlineKeyboardButton("🎲 Crazy Mode", callback_data="dice_mode_crazy")],
-                [InlineKeyboardButton("ℹ️ Mode Guide", callback_data="dice_mode_guide"),
-                 InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
-            ]
-            await query.edit_message_text("🎲 Choose the game mode:", reply_markup=InlineKeyboardMarkup(keyboard))
-            return
+            if data == "dice_mode_guide":
+                guide_text = (
+                    "🎲 **Normal Mode**: Roll one die, highest number wins the round.\n\n"
+                    "🎲 **Double Roll**: Roll two dice, highest sum wins the round.\n\n"
+                    "🎲 **Crazy Mode**: Roll one die, lowest number (inverted: 6=1, 1=6) wins the round."
+                )
+                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="dice_back")]]
+                await query.edit_message_text(guide_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+                return
 
-        elif data == "dice_cancel":
-            print(f"Checking cancel for user {user_id}, dice_initiator: {context.user_data.get('dice_initiator')}")
-            if 'dice_initiator' in context.user_data and context.user_data['dice_initiator'] == user_id:
-                context.user_data.clear()
+            elif data == "dice_back":
+                keyboard = [
+                    [InlineKeyboardButton("🎲 Normal Mode", callback_data="dice_mode_normal")],
+                    [InlineKeyboardButton("🎲 Double Roll", callback_data="dice_mode_double")],
+                    [InlineKeyboardButton("🎲 Crazy Mode", callback_data="dice_mode_crazy")],
+                    [InlineKeyboardButton("ℹ️ Mode Guide", callback_data="dice_mode_guide"),
+                     InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
+                ]
+                await query.edit_message_text("🎲 Choose the game mode:", reply_markup=InlineKeyboardMarkup(keyboard))
+                return
+
+            elif data == "dice_cancel":
+                del context.user_data['dice_setup']
                 await query.edit_message_text("❌ Game setup cancelled.")
-            else:
-                print("User not initiator, ignoring cancel")
-            return
+                return
 
-        # Temporarily remove initiator check for testing
-        # if 'dice_initiator' not in context.user_data or context.user_data['dice_initiator'] != user_id:
-        #     print(f"Initiator check failed: dice_initiator={context.user_data.get('dice_initiator')}, user_id={user_id}")
-        #     return
-
-        if data.startswith("dice_mode_"):
-            print(f"Mode selection: {data}")
-            mode = data.split('_')[2]
-            context.user_data['dice_mode'] = mode
-            print(f"Set dice_mode to {mode}")
-            keyboard = [
-                [InlineKeyboardButton("🏆 First to 1 point", callback_data="dice_points_1")],
-                [InlineKeyboardButton("🏅 First to 2 points", callback_data="dice_points_2")],
-                [InlineKeyboardButton("🥇 First to 3 points", callback_data="dice_points_3")],
-                [InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
-            ]
-            try:
+            elif data.startswith("dice_mode_"):
+                mode = data.split('_')[2]
+                context.user_data['dice_mode'] = mode
+                keyboard = [
+                    [InlineKeyboardButton("🏆 First to 1 point", callback_data="dice_points_1")],
+                    [InlineKeyboardButton("🏅 First to 2 points", callback_data="dice_points_2")],
+                    [InlineKeyboardButton("🥇 First to 3 points", callback_data="dice_points_3")],
+                    [InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
+                ]
                 await query.edit_message_text("🎲 Choose points to win:", reply_markup=InlineKeyboardMarkup(keyboard))
-                print("Edited message to choose points")
-            except Exception as e:
-                print(f"Failed to edit message: {e}")
 
-        elif data.startswith("dice_points_"):
-            print(f"Points selection: {data}")
-            points = int(data.split('_')[2])
-            context.user_data['dice_points'] = points
-            bet = context.user_data['dice_bet']
-            mode = context.user_data['dice_mode'].capitalize()
-            text = (
-                f"🎲 **Game confirmation**\n"
-                f"Game: Dice 🎲\n"
-                f"First to {points} points\n"
-                f"Mode: {mode} Mode\n"
-                f"Your bet: ${bet:.2f}\n"
-                f"Win multiplier: 1.92x"
-            )
-            keyboard = [
-                [InlineKeyboardButton("✅ Confirm", callback_data="dice_confirm_setup"),
-                 InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
-            ]
-            try:
+            elif data.startswith("dice_points_"):
+                points = int(data.split('_')[2])
+                context.user_data['dice_points'] = points
+                bet = setup['bet']
+                mode = context.user_data['dice_mode'].capitalize()
+                text = (
+                    f"🎲 **Game confirmation**\n"
+                    f"Game: Dice 🎲\n"
+                    f"First to {points} points\n"
+                    f"Mode: {mode} Mode\n"
+                    f"Your bet: ${bet:.2f}\n"
+                    f"Win multiplier: 1.92x"
+                )
+                keyboard = [
+                    [InlineKeyboardButton("✅ Confirm", callback_data="dice_confirm_setup"),
+                     InlineKeyboardButton("❌ Cancel", callback_data="dice_cancel")]
+                ]
                 await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-                print("Edited message for game confirmation")
-            except Exception as e:
-                print(f"Failed to edit message: {e}")
 
-        elif data == "dice_confirm_setup":
-            print("Confirming game setup")
-            bet = context.user_data['dice_bet']
-            mode = context.user_data['dice_mode'].capitalize()
-            points = context.user_data['dice_points']
-            username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
-            mode_description = {
-                "normal": "Roll one die, highest number wins the round.",
-                "double": "Roll two dice, highest sum wins the round.",
-                "crazy": "Roll one die, lowest number (inverted: 6=1, 1=6) wins the round."
-            }
-            text = (
-                f"🎲 {username} wants to play Dice!\n\n"
-                f"Bet: ${bet:.2f}\n"
-                f"Win multiplier: 1.92x\n"
-                f"Mode: First to {points} points\n\n"
-                f"{mode} Mode: {mode_description[context.user_data['dice_mode']]}"
-            )
-            keyboard = [
-                [InlineKeyboardButton("🤝 Challenge a Player", callback_data="dice_challenge")],
-                [InlineKeyboardButton("🤖 Play against Bot", callback_data="dice_bot")]
-            ]
-            try:
+            elif data == "dice_confirm_setup":
+                bet = setup['bet']
+                mode = context.user_data['dice_mode'].capitalize()
+                points = context.user_data['dice_points']
+                username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
+                mode_description = {
+                    "normal": "Roll one die, highest number wins the round.",
+                    "double": "Roll two dice, highest sum wins the round.",
+                    "crazy": "Roll one die, lowest number (inverted: 6=1, 1=6) wins the round."
+                }
+                text = (
+                    f"🎲 {username} wants to play Dice!\n\n"
+                    f"Bet: ${bet:.2f}\n"
+                    f"Win multiplier: 1.92x\n"
+                    f"Mode: First to {points} points\n\n"
+                    f"{mode} Mode: {mode_description[context.user_data['dice_mode']]}"
+                )
+                keyboard = [
+                    [InlineKeyboardButton("🤝 Challenge a Player", callback_data="dice_challenge")],
+                    [InlineKeyboardButton("🤖 Play against Bot", callback_data="dice_bot")]
+                ]
                 await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
-                print("Edited message for challenge or bot selection")
-            except Exception as e:
-                print(f"Failed to edit message: {e}")
 
-        elif data == "dice_challenge":
-            context.user_data['expecting_username'] = True
-            await send_with_retry(context.bot, chat_id, text="Enter the username of the player you want to challenge (e.g., @username):")
+            elif data == "dice_challenge":
+                context.user_data['expecting_username'] = True
+                await send_with_retry(context.bot, chat_id, text="Enter the username of the player you want to challenge (e.g., @username):")
 
-        elif data == "dice_bot":
-            await start_game_against_bot(context, chat_id, user_id)
+            elif data == "dice_bot":
+                await start_game_against_bot(context, chat_id, user_id)
 
-        # Remaining handlers unchanged for brevity
-        elif data.startswith("dice_accept_"):
-            game_id = int(data.split('_')[2])
-            if game_id not in context.bot_data.get('pending_challenges', {}):
-                await query.edit_message_text("❌ Challenge no longer valid.")
-                return
-            game = context.bot_data['pending_challenges'][game_id]
-            if user_id != game['challenged']:
-                return
-            if (chat_id, game['initiator']) in context.bot_data.get('user_games', {}) or (chat_id, user_id) in context.bot_data.get('user_games', {}):
-                await send_with_retry(context.bot, chat_id, text="One of you is already in a game!")
-                return
-            game_key = (chat_id, game['initiator'], user_id)
-            context.bot_data.setdefault('games', {})[game_key] = {
-                'player1': game['initiator'],
-                'player2': user_id,
-                'mode': game['mode'],
-                'points_to_win': game['points_to_win'],
-                'bet': game['bet'],
-                'scores': {'player1': 0, 'player2': 0},
-                'current_player': 'player1',
-                'rolls': {'player1': [], 'player2': []},
-                'rolls_needed': 2 if game['mode'] == 'double' else 1,
-                'roll_count': {'player1': 0, 'player2': 0},
-                'round_number': 1
-            }
-            context.bot_data.setdefault('user_games', {})[(chat_id, game['initiator'])] = game_key
-            context.bot_data['user_games'][(chat_id, user_id)] = game_key
-            update_user_balance(game['initiator'], get_user_balance(game['initiator']) - game['bet'])
-            update_user_balance(user_id, get_user_balance(user_id) - game['bet'])
-            player1_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Player1"
-            player2_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player2"
-            text = (
-                f"🎲 Match started!\n"
-                f"Player 1: @{player1_username}\n"
-                f"Player 2: @{player2_username}\n\n"
-                f"Round 1: @{player1_username}, your turn! Tap the button to roll the dice."
-            )
-            keyboard = [[InlineKeyboardButton("🎲 Roll Dice (Round 1)", callback_data="dice_roll_1")]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await send_with_retry(context.bot, chat_id, text=text, reply_markup=reply_markup)
-
-        elif data.startswith("dice_cancel_"):
-            game_id = int(data.split('_')[2])
-            if game_id not in context.bot_data.get('pending_challenges', {}):
-                await query.edit_message_text("❌ Challenge no longer valid.")
-                return
-            game = context.bot_data['pending_challenges'][game_id]
-            initiator_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Someone"
-            text = f"❌ {initiator_username}'s challenge was declined."
-            await query.edit_message_text(text=text)
-            del context.bot_data['pending_challenges'][game_id]
-
+        # Handle in-game phase
         elif data.startswith("dice_roll_"):
-            logger.info(f"Roll dice pressed by user {user_id} in chat {chat_id}")
             game_key = context.bot_data.get('user_games', {}).get((chat_id, user_id))
             if not game_key:
-                logger.info("No game key found")
-                await send_with_retry(context.bot, chat_id, text="No active game found!")
+                await query.answer("No active game found!")
                 return
             game = context.bot_data.get('games', {}).get(game_key)
             if not game:
-                logger.info("Game not found in bot_data")
-                await send_with_retry(context.bot, chat_id, text="Game data missing!")
+                await query.answer("Game data missing!")
+                return
+            if query.message.message_id != game.get('message_id'):
+                await query.answer("This message is not for your game!")
                 return
             if max(game['scores'].values()) >= game['points_to_win']:
                 await send_with_retry(context.bot, chat_id, text="The game has already ended!")
                 return
             player_key = 'player1' if game['player1'] == user_id else 'player2' if game['player2'] == user_id else None
             if not player_key:
-                logger.info("User is not a player in this game")
                 return
-            try:
-                turn_round = int(data.split('_')[2])
-            except ValueError:
-                await send_with_retry(context.bot, chat_id, text="Invalid callback data.")
-                return
+            turn_round = int(data.split('_')[2])
             if turn_round != game['round_number']:
                 await send_with_retry(context.bot, chat_id, text="This button is from a previous round!")
                 return
             if player_key != game['current_player']:
-                logger.info(f"User {player_key} is not the current player ({game['current_player']})")
                 await send_with_retry(context.bot, chat_id, text="It's not your turn!")
                 return
-            logger.info(f"Game state before roll: {game}")
             dice_msg = await send_with_retry(context.bot, chat_id, emoji='🎲')
             if dice_msg is None:
                 await send_with_retry(context.bot, chat_id, text="Failed to roll the dice. Please try again later.")
                 return
-            await asyncio.sleep(4)  # Wait for dice animation
+            await asyncio.sleep(4)
             dice_value = dice_msg.dice.value
             game['rolls'][player_key].append(dice_value)
             game['roll_count'][player_key] += 1
-            logger.info(f"Player {player_key} rolled: {dice_value}, Rolls: {game['rolls'][player_key]}")
 
             if game['roll_count']['player1'] == game['rolls_needed'] and game['roll_count']['player2'] == game['rolls_needed']:
                 await evaluate_round(game, chat_id, game_key, context)
@@ -421,13 +354,71 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                             bot_rolls.append(dice_msg.dice.value)
                         game['rolls'][other_player].extend(bot_rolls)
                         game['roll_count'][other_player] += len(bot_rolls)
-                        logger.info(f"Bot rolled: {bot_rolls}, Game state: {game}")
                         await evaluate_round(game, chat_id, game_key, context)
                     else:
                         other_username = (await context.bot.get_chat_member(chat_id, game[other_player])).user.username or "Player"
                         keyboard = [[InlineKeyboardButton(f"🎲 Roll Dice (Round {game['round_number']})", callback_data=f"dice_roll_{game['round_number']}")]]
                         reply_markup = InlineKeyboardMarkup(keyboard)
                         await send_with_retry(context.bot, chat_id, text=f"Round {game['round_number']}: @{other_username}, your turn! Tap the button to roll the dice.", reply_markup=reply_markup)
+
+        # Handle post-game and challenge actions
+        elif data.startswith("dice_accept_"):
+            game_id = int(data.split('_')[2])
+            if game_id not in context.bot_data.get('pending_challenges', {}):
+                await query.edit_message_text("❌ Challenge no longer valid.")
+                return
+            game = context.bot_data['pending_challenges'][game_id]
+            if user_id != game['challenged']:
+                return
+            if (chat_id, game['initiator']) in context.bot_data.get('user_games', {}) or (chat_id, user_id) in context.bot_data.get('user_games', {}):
+                await send_with_retry(context.bot, chat_id, text="One of you is already in a game!")
+                return
+            game_key = (chat_id, game['initiator'], user_id)
+            game_state = {
+                'player1': game['initiator'],
+                'player2': user_id,
+                'mode': game['mode'],
+                'points_to_win': game['points_to_win'],
+                'bet': game['bet'],
+                'scores': {'player1': 0, 'player2': 0},
+                'current_player': 'player1',
+                'rolls': {'player1': [], 'player2': []},
+                'rolls_needed': 2 if game['mode'] == 'double' else 1,
+                'roll_count': {'player1': 0, 'player2': 0},
+                'round_number': 1,
+                'message_id': None
+            }
+            context.bot_data.setdefault('games', {})[game_key] = game_state
+            context.bot_data.setdefault('user_games', {})[(chat_id, game['initiator'])] = game_key
+            context.bot_data['user_games'][(chat_id, user_id)] = game_key
+            update_user_balance(game['initiator'], get_user_balance(game['initiator']) - game['bet'])
+            update_user_balance(user_id, get_user_balance(user_id) - game['bet'])
+            player1_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Player1"
+            player2_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player2"
+            text = (
+                f"🎲 Match started!\n"
+                f"Player 1: @{player1_username}\n"
+                f"Player 2: @{player2_username}\n\n"
+                f"Round 1: @{player1_username}, your turn! Tap the button to roll the dice."
+            )
+            keyboard = [[InlineKeyboardButton("🎲 Roll Dice (Round 1)", callback_data="dice_roll_1")]]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            message = await send_with_retry(context.bot, chat_id, text=text, reply_markup=reply_markup)
+            game_state['message_id'] = message.message_id
+            del context.bot_data['pending_challenges'][game_id]
+            if 'dice_setup' in context.user_data:
+                del context.user_data['dice_setup']
+
+        elif data.startswith("dice_cancel_"):
+            game_id = int(data.split('_')[2])
+            if game_id not in context.bot_data.get('pending_challenges', {}):
+                await query.edit_message_text("❌ Challenge no longer valid.")
+                return
+            game = context.bot_data['pending_challenges'][game_id]
+            initiator_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Someone"
+            text = f"❌ {initiator_username}'s challenge was declined."
+            await query.edit_message_text(text=text)
+            del context.bot_data['pending_challenges'][game_id]
 
         elif data == "dice_play_again":
             last_games = context.bot_data.get('last_games', {}).get(chat_id, {})
@@ -440,6 +431,7 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 context.user_data['dice_mode'] = last_game['mode']
                 context.user_data['dice_points'] = last_game['points_to_win']
                 context.user_data['dice_bet'] = last_game['bet']
+                context.user_data['dice_setup'] = {'initiator': user_id, 'bet': last_game['bet'], 'state': 'mode_selection'}
                 await start_game_against_bot(context, chat_id, user_id)
             else:
                 opponent_id = opponent
@@ -485,6 +477,7 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 context.user_data['dice_mode'] = last_game['mode']
                 context.user_data['dice_points'] = last_game['points_to_win']
                 context.user_data['dice_bet'] = new_bet
+                context.user_data['dice_setup'] = {'initiator': user_id, 'bet': new_bet, 'state': 'mode_selection'}
                 await start_game_against_bot(context, chat_id, user_id)
             else:
                 opponent_id = opponent
@@ -521,7 +514,6 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 await send_with_retry(context.bot, chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
         else:
-            print(f"Unhandled callback data: {data}")
             await query.answer("Unknown action.")
 
     except Exception as e:
@@ -532,7 +524,7 @@ async def dice_button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def dice_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if context.user_data.get('expecting_username') and context.user_data.get('dice_initiator') == user_id:
+    if context.user_data.get('expecting_username') and context.user_data.get('dice_setup', {}).get('initiator') == user_id:
         username = update.message.text.strip()
         if not username.startswith('@'):
             await send_with_retry(context.bot, chat_id, text="Invalid username. Use @username.")
@@ -549,7 +541,8 @@ async def dice_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if challenged_user_id == user_id:
             await send_with_retry(context.bot, chat_id, text="You can't challenge yourself!")
             return
-        if get_user_balance(challenged_user_id) < context.user_data['dice_bet']:
+        setup = context.user_data['dice_setup']
+        if get_user_balance(challenged_user_id) < setup['bet']:
             await send_with_retry(context.bot, chat_id, text=f"@{username} doesn’t have enough balance!")
             return
         if (chat_id, challenged_user_id) in context.bot_data.get('user_games', {}):
@@ -561,12 +554,12 @@ async def dice_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
             'challenged': challenged_user_id,
             'mode': context.user_data['dice_mode'],
             'points_to_win': context.user_data['dice_points'],
-            'bet': context.user_data['dice_bet']
+            'bet': setup['bet']
         }
         initiator_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
         text = (
             f"🎲 {initiator_username} challenges {username}!\n"
-            f"Bet: ${context.user_data['dice_bet']:.2f}\n"
+            f"Bet: ${setup['bet']:.2f}\n"
             f"Mode: {context.user_data['dice_mode'].capitalize()}\n"
             f"First to {context.user_data['dice_points']} points"
         )
