@@ -55,6 +55,9 @@ def init_db():
                      (user_id INTEGER PRIMARY KEY, username TEXT, balance REAL)''')
         c.execute('''CREATE TABLE IF NOT EXISTS pending_deposits 
                      (payment_id TEXT PRIMARY KEY, user_id INTEGER, currency TEXT)''')
+        c.execute('''CREATE TABLE IF NOT EXISTS house_balance 
+                     (id INTEGER PRIMARY KEY, balance REAL)''')
+        c.execute("INSERT OR IGNORE INTO house_balance (id, balance) VALUES (1, 0.0)")
         conn.commit()
 
 def user_exists(user_id):
@@ -101,6 +104,21 @@ def get_user_by_username(username):
         c.execute("SELECT user_id FROM users WHERE LOWER(username) = LOWER(?)", (username,))
         result = c.fetchone()
         return result[0] if result else None
+
+def get_house_balance():
+    with sqlite3.connect('users.db') as conn:
+        c = conn.cursor()
+        c.execute("SELECT balance FROM house_balance WHERE id = 1")
+        result = c.fetchone()
+        return Decimal(str(result[0])) if result else Decimal('0.0')
+
+def set_house_balance(new_balance):
+    with sqlite3.connect('users.db') as conn:
+        c = conn.cursor()
+        c.execute("UPDATE house_balance SET balance = ? WHERE id = 1", (float(new_balance),))
+        if c.rowcount == 0:
+            c.execute("INSERT INTO house_balance (id, balance) VALUES (1, ?)", (float(new_balance),))
+        conn.commit()
 
 # Helper functions
 def create_deposit_payment(user_id, currency='ltc'):
@@ -187,11 +205,12 @@ def format_expiration_time(expiration_date_str):
     except:
         return "1:00:00"
 
-# Generic game command handler
+# Generic game command handler with house balance update
 def create_game_handler(game_name, game_func):
     async def handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
         user_id = update.effective_user.id
         chat_id = update.effective_chat.id
+        chat_type = update.effective_chat.type
         if not user_exists(user_id):
             await context.bot.send_message(chat_id=chat_id, text="Please register with /start first.")
             return
@@ -225,6 +244,11 @@ def create_game_handler(game_name, game_func):
             await context.bot.send_message(chat_id=chat_id, text="Insufficient balance.")
             return
         context.user_data['bet_amount'] = bet_amount
+        # Add bet amount to house balance if in a group chat
+        if chat_type != 'private':
+            current_house_balance = get_house_balance()
+            set_house_balance(current_house_balance + bet_amount)
+            logger.info(f"Added ${bet_amount:.2f} to house balance from bet in group chat. New house balance: ${current_house_balance + bet_amount:.2f}")
         await game_func(update, context)
     return handler
 
@@ -316,6 +340,54 @@ async def remove_balance_command(update: Update, context: ContextTypes.DEFAULT_T
     await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Removed ${amount:.2f} from @{username}'s balance. New balance: ${new_balance:.2f}")
     logger.info(f"Admin removed ${amount:.2f} from @{username}'s balance. New balance: ${new_balance:.2f}")
 
+# House balance command handlers
+async def add_house_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="You are not authorized to use this command.")
+        return
+    if len(context.args) != 1:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /addhouse456 <amount>")
+        return
+    try:
+        amount = Decimal(context.args[0])
+    except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid amount. Please use a number.")
+        return
+    if amount <= 0:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Amount must be greater than 0.")
+        return
+    current_balance = get_house_balance()
+    new_balance = current_balance + amount
+    set_house_balance(new_balance)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Added ${amount:.2f} to house balance. New house balance: ${new_balance:.2f}")
+
+async def remove_house_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="You are not authorized to use this command.")
+        return
+    if len(context.args) != 1:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Usage: /removehouse456 <amount>")
+        return
+    try:
+        amount = Decimal(context.args[0])
+    except ValueError:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Invalid amount. Please use a number.")
+        return
+    if amount <= 0:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Amount must be greater than 0.")
+        return
+    current_balance = get_house_balance()
+    if amount > current_balance:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text="Insufficient house balance.")
+        return
+    new_balance = current_balance - amount
+    set_house_balance(new_balance)
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"Removed ${amount:.2f} from house balance. New house balance: ${new_balance:.2f}")
+
+async def housebal_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    balance = get_house_balance()
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=f"House balance: ${balance:.2f}")
+
 # Withdrawal Helper Functions
 def is_valid_ltc_address(address):
     """Validate Litecoin address format."""
@@ -328,7 +400,6 @@ def get_jwt_token():
     email = os.environ.get("NOWPAYMENTS_EMAIL")
     password = os.environ.get("NOWPAYMENTS_PASSWORD")
     
-    # Check if environment variables are set
     if not email or not password:
         logger.error("NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD not set in environment variables.")
         raise ValueError("Missing NOWPAYMENTS_EMAIL or NOWPAYMENTS_PASSWORD")
@@ -344,7 +415,7 @@ def get_jwt_token():
         response = requests.post(url, json=payload, headers=headers)
         logger.info(f"Authentication response status: {response.status_code}")
         logger.info(f"Authentication response content: {response.text}")
-        response.raise_for_status()  # Raises an exception for 4xx/5xx status codes
+        response.raise_for_status()
         data = response.json()
         if "token" in data:
             logger.info("JWT token obtained successfully")
@@ -362,7 +433,7 @@ def initiate_payout(currency, amount, address):
     """Initiate a payout via NOWPayments API with proper authentication and payload."""
     url = "https://api.nowpayments.io/v1/payout"
     try:
-        token = get_jwt_token()  # Fetch a fresh token
+        token = get_jwt_token()
         headers = {
             "x-api-key": NOWPAYMENTS_API_KEY,
             "Authorization": f"Bearer {token}",
@@ -607,6 +678,11 @@ async def main():
     # Register addbalance and removebalance commands (owner only)
     application.add_handler(CommandHandler("addbalance", add_balance_command))
     application.add_handler(CommandHandler("removebalance", remove_balance_command))
+
+    # Register house balance commands
+    application.add_handler(CommandHandler("addhouse456", add_house_command))
+    application.add_handler(CommandHandler("removehouse456", remove_house_command))
+    application.add_handler(CommandHandler("housebal", housebal_command))
 
     # Register game button handlers FIRST
     application.add_handler(CallbackQueryHandler(dice_button_handler, pattern="^dice_"))
