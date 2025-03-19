@@ -100,18 +100,20 @@ async def evaluate_round(game, chat_id, game_key, context):
         text += f"\n\nRound {game['round_number']}: @{player1_username}, your turn! Tap the button to throw the dart."
         keyboard = [[InlineKeyboardButton(f"🎯 Throw Dart (Round {game['round_number']})", callback_data=f"dart_throw_{game['round_number']}")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
+        message = await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
+        game['message_id'] = message.message_id  # Store the message_id for the new round
 
 # Start game against bot
 async def start_game_against_bot(context, chat_id, user_id):
     if (chat_id, user_id) in context.bot_data.get('user_games', {}):
         await send_with_retry(context.bot, chat_id, "You are already in a game!")
         return
-    bet = context.user_data['dart_bet']
+    setup = context.user_data.get('dart_setup', {})
+    bet = setup['bet']
     mode = context.user_data['dart_mode']
     points = context.user_data['dart_points']
     game_key = (chat_id, user_id, 'bot')
-    context.bot_data.setdefault('games', {})[game_key] = {
+    game = {
         'player1': user_id,
         'player2': 'bot',
         'mode': mode,
@@ -122,8 +124,10 @@ async def start_game_against_bot(context, chat_id, user_id):
         'rolls': {'player1': [], 'player2': []},
         'rolls_needed': 2 if mode == 'double' else 1,
         'roll_count': {'player1': 0, 'player2': 0},
-        'round_number': 1
+        'round_number': 1,
+        'message_id': None
     }
+    context.bot_data.setdefault('games', {})[game_key] = game
     context.bot_data.setdefault('user_games', {})[(chat_id, user_id)] = game_key
     update_user_balance(user_id, get_user_balance(user_id) - bet)
     player1_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player1"
@@ -135,7 +139,9 @@ async def start_game_against_bot(context, chat_id, user_id):
     )
     keyboard = [[InlineKeyboardButton("🎯 Throw Dart (Round 1)", callback_data="dart_throw_1")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
+    message = await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
+    game['message_id'] = message.message_id  # Store the initial game message_id
+    context.user_data.pop('dart_setup', None)  # Clear setup state
 
 # Command handler for /dart
 async def dart_command(update, context):
@@ -162,8 +168,14 @@ async def dart_command(update, context):
         if (chat_id, user_id) in context.bot_data.get('user_games', {}):
             await send_with_retry(context.bot, chat_id, "You are already in a game!")
             return
-        context.user_data['dart_bet'] = amount
-        context.user_data['dart_initiator'] = user_id
+
+        # Use a single setup dictionary to manage state
+        context.user_data['dart_setup'] = {
+            'initiator': user_id,
+            'bet': amount,
+            'state': 'mode_selection',
+            'message_id': None
+        }
 
         keyboard = [
             [InlineKeyboardButton("🎯 Normal Mode", callback_data="dart_mode_normal")],
@@ -173,7 +185,8 @@ async def dart_command(update, context):
              InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_with_retry(context.bot, chat_id, "🎯 Choose the game mode:", reply_markup=reply_markup)
+        message = await send_with_retry(context.bot, chat_id, "🎯 Choose the game mode:", reply_markup=reply_markup)
+        context.user_data['dart_setup']['message_id'] = message.message_id  # Store setup message_id
 
     except ValueError as e:
         await send_with_retry(context.bot, chat_id, f"Invalid bet amount: {str(e)}. Use a positive number.")
@@ -186,165 +199,121 @@ async def dart_button_handler(update, context):
     chat_id = query.message.chat_id
     data = query.data
 
-    if data == "dart_mode_guide":
-        guide_text = (
-            "🎯 **Normal Mode**: Throw one dart, highest number wins the round.\n\n"
-            "🎯 **Double Throw**: Throw two darts, highest sum wins the round.\n\n"
-            "🎯 **Crazy Mode**: Throw one dart, lowest number (inverted: 6=1, 1=6) wins the round."
-        )
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="dart_back")]]
-        await query.edit_message_text(guide_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
-        return
+    logger.info(f"Button clicked: {data} by user {user_id} in chat {chat_id}")
 
-    elif data == "dart_back":
-        keyboard = [
-            [InlineKeyboardButton("🎯 Normal Mode", callback_data="dart_mode_normal")],
-            [InlineKeyboardButton("🎯 Double Throw", callback_data="dart_mode_double")],
-            [InlineKeyboardButton("🎯 Crazy Mode", callback_data="dart_mode_crazy")],
-            [InlineKeyboardButton("ℹ️ Mode Guide", callback_data="dart_mode_guide"),
-             InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
-        ]
-        await query.edit_message_text("🎯 Choose the game mode:", reply_markup=InlineKeyboardMarkup(keyboard))
-        return
+    # Handle setup phase
+    if 'dart_setup' in context.user_data:
+        setup = context.user_data['dart_setup']
+        if setup['initiator'] != user_id:
+            logger.info(f"User {user_id} is not the initiator ({setup['initiator']})")
+            await query.answer("This is not your game setup!")
+            return
+        if setup['message_id'] != query.message.message_id:
+            logger.info(f"Message ID mismatch: setup {setup['message_id']}, query {query.message.message_id}")
+            await query.answer("This is not your game setup!")
+            return
 
-    elif data == "dart_cancel":
-        if 'dart_initiator' in context.user_data and context.user_data['dart_initiator'] == user_id:
-            context.user_data.clear()
+        if data == "dart_mode_guide":
+            guide_text = (
+                "🎯 **Normal Mode**: Throw one dart, highest number wins the round.\n\n"
+                "🎯 **Double Throw**: Throw two darts, highest sum wins the round.\n\n"
+                "🎯 **Crazy Mode**: Throw one dart, lowest number (inverted: 6=1, 1=6) wins the round."
+            )
+            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data="dart_back")]]
+            await query.edit_message_text(guide_text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+            return
+
+        elif data == "dart_back":
+            keyboard = [
+                [InlineKeyboardButton("🎯 Normal Mode", callback_data="dart_mode_normal")],
+                [InlineKeyboardButton("🎯 Double Throw", callback_data="dart_mode_double")],
+                [InlineKeyboardButton("🎯 Crazy Mode", callback_data="dart_mode_crazy")],
+                [InlineKeyboardButton("ℹ️ Mode Guide", callback_data="dart_mode_guide"),
+                 InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
+            ]
+            await query.edit_message_text("🎯 Choose the game mode:", reply_markup=InlineKeyboardMarkup(keyboard))
+            return
+
+        elif data == "dart_cancel":
+            context.user_data.pop('dart_setup', None)
             await query.edit_message_text("❌ Game setup cancelled.")
-        return
-
-    elif data.startswith("dart_mode_"):
-        if 'dart_initiator' not in context.user_data or context.user_data['dart_initiator'] != user_id:
             return
-        mode = data.split('_')[2]
-        context.user_data['dart_mode'] = mode
-        keyboard = [
-            [InlineKeyboardButton("🏆 First to 1 point", callback_data="dart_points_1")],
-            [InlineKeyboardButton("🏅 First to 2 points", callback_data="dart_points_2")],
-            [InlineKeyboardButton("🥇 First to 3 points", callback_data="dart_points_3")],
-            [InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
-        ]
-        await query.edit_message_text("🎯 Choose points to win:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data.startswith("dart_points_"):
-        if 'dart_initiator' not in context.user_data or context.user_data['dart_initiator'] != user_id:
-            return
-        points = int(data.split('_')[2])
-        context.user_data['dart_points'] = points
-        bet = context.user_data['dart_bet']
-        mode = context.user_data['dart_mode'].capitalize()
-        text = (
-            f"🎯 **Game confirmation**\n"
-            f"Game: Darts 🎯\n"
-            f"First to {points} points\n"
-            f"Mode: {mode} Mode\n"
-            f"Your bet: ${bet:.2f}\n"
-            f"Win multiplier: 1.92x"
-        )
-        keyboard = [
-            [InlineKeyboardButton("✅ Confirm", callback_data="dart_confirm_setup"),
-             InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
-        ]
-        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+        elif data.startswith("dart_mode_"):
+            mode = data.split('_')[2]
+            context.user_data['dart_mode'] = mode
+            keyboard = [
+                [InlineKeyboardButton("🏆 First to 1 point", callback_data="dart_points_1")],
+                [InlineKeyboardButton("🏅 First to 2 points", callback_data="dart_points_2")],
+                [InlineKeyboardButton("🥇 First to 3 points", callback_data="dart_points_3")],
+                [InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
+            ]
+            await query.edit_message_text("🎯 Choose points to win:", reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data == "dart_confirm_setup":
-        if 'dart_initiator' not in context.user_data or context.user_data['dart_initiator'] != user_id:
-            return
-        bet = context.user_data['dart_bet']
-        mode = context.user_data['dart_mode'].capitalize()
-        points = context.user_data['dart_points']
-        username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
-        mode_description = {
-            "normal": "Throw one dart, highest number wins the round.",
-            "double": "Throw two darts, highest sum wins the round.",
-            "crazy": "Throw one dart, lowest number (inverted: 6=1, 1=6) wins the round."
-        }
-        text = (
-            f"🎯 {username} wants to play Darts!\n\n"
-            f"Bet: ${bet:.2f}\n"
-            f"Win multiplier: 1.92x\n"
-            f"Mode: First to {points} points\n\n"
-            f"{mode} Mode: {mode_description[context.user_data['dart_mode']]}"
-        )
-        keyboard = [
-            [InlineKeyboardButton("🤝 Challenge a Player", callback_data="dart_challenge")],
-            [InlineKeyboardButton("🤖 Play against Bot", callback_data="dart_bot")]
-        ]
-        await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
+        elif data.startswith("dart_points_"):
+            points = int(data.split('_')[2])
+            context.user_data['dart_points'] = points
+            bet = setup['bet']
+            mode = context.user_data['dart_mode'].capitalize()
+            text = (
+                f"🎯 **Game confirmation**\n"
+                f"Game: Darts 🎯\n"
+                f"First to {points} points\n"
+                f"Mode: {mode} Mode\n"
+                f"Your bet: ${bet:.2f}\n"
+                f"Win multiplier: 1.92x"
+            )
+            keyboard = [
+                [InlineKeyboardButton("✅ Confirm", callback_data="dart_confirm_setup"),
+                 InlineKeyboardButton("❌ Cancel", callback_data="dart_cancel")]
+            ]
+            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
-    elif data == "dart_challenge":
-        if 'dart_initiator' not in context.user_data or context.user_data['dart_initiator'] != user_id:
-            return
-        context.user_data['expecting_username'] = True
-        await send_with_retry(context.bot, chat_id, "Enter the username of the player you want to challenge (e.g., @username):")
+        elif data == "dart_confirm_setup":
+            bet = setup['bet']
+            mode = context.user_data['dart_mode'].capitalize()
+            points = context.user_data['dart_points']
+            username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
+            mode_description = {
+                "normal": "Throw one dart, highest number wins the round.",
+                "double": "Throw two darts, highest sum wins the round.",
+                "crazy": "Throw one dart, lowest number (inverted: 6=1, 1=6) wins the round."
+            }
+            text = (
+                f"🎯 {username} wants to play Darts!\n\n"
+                f"Bet: ${bet:.2f}\n"
+                f"Win multiplier: 1.92x\n"
+                f"Mode: First to {points} points\n\n"
+                f"{mode} Mode: {mode_description[context.user_data['dart_mode']]}"
+            )
+            keyboard = [
+                [InlineKeyboardButton("🤝 Challenge a Player", callback_data="dart_challenge")],
+                [InlineKeyboardButton("🤖 Play against Bot", callback_data="dart_bot")]
+            ]
+            await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-    elif data == "dart_bot":
-        await start_game_against_bot(context, chat_id, user_id)
+        elif data == "dart_challenge":
+            context.user_data['expecting_username'] = True
+            await send_with_retry(context.bot, chat_id, "Enter the username of the player you want to challenge (e.g., @username):")
 
-    elif data.startswith("dart_accept_"):
-        game_id = int(data.split('_')[2])
-        if game_id not in context.bot_data.get('pending_challenges', {}):
-            await query.edit_message_text("❌ Challenge no longer valid.")
-            return
-        game = context.bot_data['pending_challenges'][game_id]
-        if user_id != game['challenged']:
-            return
-        if (chat_id, game['initiator']) in context.bot_data.get('user_games', {}) or (chat_id, user_id) in context.bot_data.get('user_games', {}):
-            await send_with_retry(context.bot, chat_id, "One of you is already in a game!")
-            return
-        game_key = (chat_id, game['initiator'], user_id)
-        context.bot_data.setdefault('games', {})[game_key] = {
-            'player1': game['initiator'],
-            'player2': user_id,
-            'mode': game['mode'],
-            'points_to_win': game['points_to_win'],
-            'bet': game['bet'],
-            'scores': {'player1': 0, 'player2': 0},
-            'current_player': 'player1',
-            'rolls': {'player1': [], 'player2': []},
-            'rolls_needed': 2 if game['mode'] == 'double' else 1,
-            'roll_count': {'player1': 0, 'player2': 0},
-            'round_number': 1
-        }
-        context.bot_data.setdefault('user_games', {})[(chat_id, game['initiator'])] = game_key
-        context.bot_data['user_games'][(chat_id, user_id)] = game_key
-        update_user_balance(game['initiator'], get_user_balance(game['initiator']) - game['bet'])
-        update_user_balance(user_id, get_user_balance(user_id) - game['bet'])
-        player1_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Player1"
-        player2_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player2"
-        text = (
-            f"🎯 Match started!\n"
-            f"Player 1: @{player1_username}\n"
-            f"Player 2: @{player2_username}\n\n"
-            f"Round 1: @{player1_username}, your turn! Tap the button to throw the dart."
-        )
-        keyboard = [[InlineKeyboardButton("🎯 Throw Dart (Round 1)", callback_data="dart_throw_1")]]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
-        del context.bot_data['pending_challenges'][game_id]
+        elif data == "dart_bot":
+            await start_game_against_bot(context, chat_id, user_id)
 
-    elif data.startswith("dart_cancel_"):
-        game_id = int(data.split('_')[2])
-        if game_id not in context.bot_data.get('pending_challenges', {}):
-            await query.edit_message_text("❌ Challenge no longer valid.")
-            return
-        game = context.bot_data['pending_challenges'][game_id]
-        initiator_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Someone"
-        text = f"❌ {initiator_username}'s challenge was declined."
-        await query.edit_message_text(text=text)
-        del context.bot_data['pending_challenges'][game_id]
-
+    # Handle in-game phase
     elif data.startswith("dart_throw_"):
-        logger.info(f"Throw dart pressed by user {user_id} in chat {chat_id}")
         game_key = context.bot_data.get('user_games', {}).get((chat_id, user_id))
         if not game_key:
             logger.info("No game key found")
-            await send_with_retry(context.bot, chat_id, "No active game found!")
+            await query.answer("No active game found!")
             return
         game = context.bot_data.get('games', {}).get(game_key)
         if not game:
             logger.info("Game not found in bot_data")
-            await send_with_retry(context.bot, chat_id, "Game data missing!")
+            await query.answer("Game data missing!")
+            return
+        if query.message.message_id != game.get('message_id'):
+            logger.info(f"Message ID mismatch: game {game.get('message_id')}, query {query.message.message_id}")
+            await query.answer("This is not your current game message!")
             return
         if max(game['scores'].values()) >= game['points_to_win']:
             await send_with_retry(context.bot, chat_id, "The game has already ended!")
@@ -366,7 +335,7 @@ async def dart_button_handler(update, context):
             await send_with_retry(context.bot, chat_id, "It's not your turn!")
             return
         logger.info(f"Game state before throw: {game}")
-        dart_msg = await send_with_retry(context.bot, chat_id, text=None, emoji='🎯')
+        dart_msg = await send_with_retry(context.bot, chat_id, emoji='🎯')
         if dart_msg is None:
             await send_with_retry(context.bot, chat_id, "Failed to throw the dart. Please try again later.")
             return
@@ -382,14 +351,15 @@ async def dart_button_handler(update, context):
             if game['roll_count'][player_key] < game['rolls_needed']:
                 keyboard = [[InlineKeyboardButton(f"🎯 Throw Again (Round {game['round_number']})", callback_data=f"dart_throw_{game['round_number']}")]]
                 reply_markup = InlineKeyboardMarkup(keyboard)
-                await send_with_retry(context.bot, chat_id, f"Round {game['round_number']}: Throw again!", reply_markup=reply_markup)
+                message = await send_with_retry(context.bot, chat_id, f"Round {game['round_number']}: Throw again!", reply_markup=reply_markup)
+                game['message_id'] = message.message_id  # Update message_id
             else:
                 other_player = 'player2' if player_key == 'player1' else 'player1'
                 game['current_player'] = other_player
                 if game[other_player] == 'bot':
                     bot_rolls = []
                     for _ in range(game['rolls_needed'] - game['roll_count'][other_player]):
-                        dart_msg = await send_with_retry(context.bot, chat_id, text=None, emoji='🎯')
+                        dart_msg = await send_with_retry(context.bot, chat_id, emoji='🎯')
                         if dart_msg is None:
                             await send_with_retry(context.bot, chat_id, "Failed to throw the dart for the bot. Please try again later.")
                             return
@@ -403,7 +373,67 @@ async def dart_button_handler(update, context):
                     other_username = (await context.bot.get_chat_member(chat_id, game[other_player])).user.username or "Player"
                     keyboard = [[InlineKeyboardButton(f"🎯 Throw Dart (Round {game['round_number']})", callback_data=f"dart_throw_{game['round_number']}")]]
                     reply_markup = InlineKeyboardMarkup(keyboard)
-                    await send_with_retry(context.bot, chat_id, f"Round {game['round_number']}: @{other_username}, your turn! Tap the button to throw the dart.", reply_markup=reply_markup)
+                    message = await send_with_retry(context.bot, chat_id, f"Round {game['round_number']}: @{other_username}, your turn! Tap the button to throw the dart.", reply_markup=reply_markup)
+                    game['message_id'] = message.message_id  # Update message_id
+
+    # Handle challenge acceptance and post-game actions
+    elif data.startswith("dart_accept_"):
+        game_id = int(data.split('_')[2])
+        if game_id not in context.bot_data.get('pending_challenges', {}):
+            await query.edit_message_text("❌ Challenge no longer valid.")
+            return
+        game = context.bot_data['pending_challenges'][game_id]
+        if user_id != game['challenged']:
+            return
+        if (chat_id, game['initiator']) in context.bot_data.get('user_games', {}) or (chat_id, user_id) in context.bot_data.get('user_games', {}):
+            await send_with_retry(context.bot, chat_id, "One of you is already in a game!")
+            return
+        game_key = (chat_id, game['initiator'], user_id)
+        game_state = {
+            'player1': game['initiator'],
+            'player2': user_id,
+            'mode': game['mode'],
+            'points_to_win': game['points_to_win'],
+            'bet': game['bet'],
+            'scores': {'player1': 0, 'player2': 0},
+            'current_player': 'player1',
+            'rolls': {'player1': [], 'player2': []},
+            'rolls_needed': 2 if game['mode'] == 'double' else 1,
+            'roll_count': {'player1': 0, 'player2': 0},
+            'round_number': 1,
+            'message_id': None
+        }
+        context.bot_data.setdefault('games', {})[game_key] = game_state
+        context.bot_data.setdefault('user_games', {})[(chat_id, game['initiator'])] = game_key
+        context.bot_data['user_games'][(chat_id, user_id)] = game_key
+        update_user_balance(game['initiator'], get_user_balance(game['initiator']) - game['bet'])
+        update_user_balance(user_id, get_user_balance(user_id) - game['bet'])
+        player1_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Player1"
+        player2_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Player2"
+        text = (
+            f"🎯 Match started!\n"
+            f"Player 1: @{player1_username}\n"
+            f"Player 2: @{player2_username}\n\n"
+            f"Round 1: @{player1_username}, your turn! Tap the button to throw the dart."
+        )
+        keyboard = [[InlineKeyboardButton("🎯 Throw Dart (Round 1)", callback_data="dart_throw_1")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        message = await send_with_retry(context.bot, chat_id, text, reply_markup=reply_markup)
+        game_state['message_id'] = message.message_id  # Store the game message_id
+        del context.bot_data['pending_challenges'][game_id]
+        if 'dart_setup' in context.user_data:
+            del context.user_data['dart_setup']
+
+    elif data.startswith("dart_cancel_"):
+        game_id = int(data.split('_')[2])
+        if game_id not in context.bot_data.get('pending_challenges', {}):
+            await query.edit_message_text("❌ Challenge no longer valid.")
+            return
+        game = context.bot_data['pending_challenges'][game_id]
+        initiator_username = (await context.bot.get_chat_member(chat_id, game['initiator'])).user.username or "Someone"
+        text = f"❌ {initiator_username}'s challenge was declined."
+        await query.edit_message_text(text=text)
+        del context.bot_data['pending_challenges'][game_id]
 
     elif data == "dart_play_again":
         last_games = context.bot_data.get('last_games', {}).get(chat_id, {})
@@ -415,7 +445,7 @@ async def dart_button_handler(update, context):
         if opponent == 'bot':
             context.user_data['dart_mode'] = last_game['mode']
             context.user_data['dart_points'] = last_game['points_to_win']
-            context.user_data['dart_bet'] = last_game['bet']
+            context.user_data['dart_setup'] = {'initiator': user_id, 'bet': last_game['bet'], 'state': 'mode_selection', 'message_id': None}
             await start_game_against_bot(context, chat_id, user_id)
         else:
             opponent_id = opponent
@@ -460,7 +490,7 @@ async def dart_button_handler(update, context):
                 return
             context.user_data['dart_mode'] = last_game['mode']
             context.user_data['dart_points'] = last_game['points_to_win']
-            context.user_data['dart_bet'] = new_bet
+            context.user_data['dart_setup'] = {'initiator': user_id, 'bet': new_bet, 'state': 'mode_selection', 'message_id': None}
             await start_game_against_bot(context, chat_id, user_id)
         else:
             opponent_id = opponent
@@ -500,7 +530,7 @@ async def dart_button_handler(update, context):
 async def dart_text_handler(update, context):
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
-    if context.user_data.get('expecting_username') and context.user_data.get('dart_initiator') == user_id:
+    if context.user_data.get('expecting_username') and context.user_data.get('dart_setup', {}).get('initiator') == user_id:
         username = update.message.text.strip()
         if not username.startswith('@'):
             await send_with_retry(context.bot, chat_id, "Invalid username. Use @username.")
@@ -517,7 +547,8 @@ async def dart_text_handler(update, context):
         if challenged_user_id == user_id:
             await send_with_retry(context.bot, chat_id, "You can't challenge yourself!")
             return
-        if get_user_balance(challenged_user_id) < context.user_data['dart_bet']:
+        setup = context.user_data['dart_setup']
+        if get_user_balance(challenged_user_id) < setup['bet']:
             await send_with_retry(context.bot, chat_id, f"@{username} doesn’t have enough balance!")
             return
         if (chat_id, challenged_user_id) in context.bot_data.get('user_games', {}):
@@ -529,12 +560,12 @@ async def dart_text_handler(update, context):
             'challenged': challenged_user_id,
             'mode': context.user_data['dart_mode'],
             'points_to_win': context.user_data['dart_points'],
-            'bet': context.user_data['dart_bet']
+            'bet': setup['bet']
         }
         initiator_username = (await context.bot.get_chat_member(chat_id, user_id)).user.username or "Someone"
         text = (
             f"🎯 {initiator_username} challenges {username}!\n"
-            f"Bet: ${context.user_data['dart_bet']:.2f}\n"
+            f"Bet: ${setup['bet']:.2f}\n"
             f"Mode: {context.user_data['dart_mode'].capitalize()}\n"
             f"First to {context.user_data['dart_points']} points"
         )
