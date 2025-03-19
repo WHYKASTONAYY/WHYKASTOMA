@@ -684,16 +684,14 @@ async def main():
     application.add_handler(CommandHandler("removehouse456", remove_house_command))
     application.add_handler(CommandHandler("housebal", housebal_command))
 
-    # Register game button handlers
-    # Note: Dice and Bowling handlers have no wrapper, assuming they manage state internally
-    application.add_handler(CallbackQueryHandler(dice_button_handler, pattern="^dice_"))
-    application.add_handler(CallbackQueryHandler(bowling_button_handler, pattern="^bowl_"))
-    # Other games keep the wrapper; ensure their state is set correctly
+    # Register game button handlers with ownership check
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dice_button_handler, 'dice_game'), pattern="^dice_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
-    application.add_handler(CallbackQueryHandler(basketball_button_handler, pattern="^basketball_"))
-    application.add_handler(CallbackQueryHandler(coin_button_handler, pattern="^coin_"))
-    application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
-    application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^football_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, 'basketball_game'), pattern="^basketball_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(bowling_button_handler, 'bowl_game'), pattern="^bowl_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, 'coin_game'), pattern="^coin_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dart_button_handler, 'dart_game'), pattern="^dart_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(football_button_handler, 'football_game'), pattern="^football_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(mine_button_handler, 'mine_game'), pattern="^mine_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(predict_button_handler, 'predict_game'), pattern="^predict_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(roulette_button_handler, 'roulette_game'), pattern="^roul_"))
