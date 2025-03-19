@@ -4,6 +4,7 @@ from database import user_exists, get_user_balance, update_user_balance
 from utils import logger
 
 def get_combo_parts(dice_value: int) -> list[str]:
+    """Convert dice value to a list of slot symbols."""
     values = ["🍫", "🍇", "🍋", "7️⃣"]
     dice_value -= 1
     result = []
@@ -13,6 +14,7 @@ def get_combo_parts(dice_value: int) -> list[str]:
     return result
 
 def get_payout(symbols: list[str]) -> float:
+    """Calculate payout multiplier based on slot symbols."""
     s1, s2, s3 = symbols
     if s1 == '7️⃣' and s2 == '7️⃣' and s3 == '7️⃣':
         return 20.0
@@ -37,9 +39,11 @@ def get_payout(symbols: list[str]) -> float:
     return 0.0
 
 async def slots_command(update, context):
+    """Handle the /slots command to start a new game."""
     user_id = update.effective_user.id
     chat_id = update.effective_chat.id
 
+    # Restrict slots to private chats (unchanged behavior)
     if update.message.chat.type != 'private':
         await context.bot.send_message(
             chat_id=chat_id,
@@ -47,10 +51,17 @@ async def slots_command(update, context):
         )
         return
 
+    # Check if user is registered
     if not user_exists(user_id):
         await context.bot.send_message(chat_id=chat_id, text="Please register with /start.")
         return
 
+    # Prevent multiple active games
+    if 'slots_game' in context.user_data:
+        await context.bot.send_message(chat_id=chat_id, text="You already have an active slots game. Finish or cancel it first.")
+        return
+
+    # Initialize game state
     balance = get_user_balance(user_id)
     bet_size = 1.0
     text = f"💰 Balance: ${balance:.2f}\n\nChoose the bet size:"
@@ -62,13 +73,15 @@ async def slots_command(update, context):
          InlineKeyboardButton("Double", callback_data="slots_bet_double"),
          InlineKeyboardButton("Max", callback_data="slots_bet_max")],
         [InlineKeyboardButton("Combos", callback_data="slots_show_combos"),
-         InlineKeyboardButton("🎰 Spin", callback_data="slots_spin")]
+         InlineKeyboardButton("🎰 Spin", callback_data="slots_spin"),
+         InlineKeyboardButton("❌ Cancel", callback_data="slots_cancel")]
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     message = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-    context.user_data['slots_game'] = {'bet_size': bet_size, 'prompt_message_id': message.message_id}
+    context.user_data['slots_game'] = {'bet_size': bet_size, 'message_id': message.message_id}
 
 async def slots_button_handler(update, context):
+    """Handle button interactions for the slots game."""
     query = update.callback_query
     await query.answer()
     data = query.data
@@ -76,18 +89,28 @@ async def slots_button_handler(update, context):
     chat_id = query.message.chat_id
     game = context.user_data.get('slots_game')
 
-    if not game or 'prompt_message_id' not in game:
+    # Validate game state and message ID
+    if not game or 'message_id' not in game or query.message.message_id != game['message_id']:
+        await query.answer("This game has ended or the button is outdated.")
         return
 
     balance = get_user_balance(user_id)
     bet_size = game['bet_size']
 
-    if data == "slots_spin":
+    if data == "slots_cancel":
+        # Cancel the game and clean up
+        del context.user_data['slots_game']
+        await context.bot.delete_message(chat_id=chat_id, message_id=game['message_id'])
+        await context.bot.send_message(chat_id=chat_id, text="Slots game cancelled.")
+        return
+
+    elif data == "slots_spin":
+        # Handle spinning the slots
         if balance < bet_size:
             await query.answer("Not enough balance to spin!", show_alert=True)
             return
 
-        await context.bot.delete_message(chat_id=chat_id, message_id=game['prompt_message_id'])
+        await context.bot.delete_message(chat_id=chat_id, message_id=game['message_id'])
         dice_message = await context.bot.send_dice(chat_id=chat_id, emoji='🎰')
         dice_value = dice_message.dice.value
         symbols = get_combo_parts(dice_value)
@@ -113,13 +136,15 @@ async def slots_button_handler(update, context):
              InlineKeyboardButton("Double", callback_data="slots_bet_double"),
              InlineKeyboardButton("Max", callback_data="slots_bet_max")],
             [InlineKeyboardButton("Combos", callback_data="slots_show_combos"),
-             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin")]
+             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin"),
+             InlineKeyboardButton("❌ Cancel", callback_data="slots_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         message = await context.bot.send_message(chat_id=chat_id, text=text, reply_markup=reply_markup)
-        game['prompt_message_id'] = message.message_id
+        game['message_id'] = message.message_id
 
     elif data.startswith("slots_bet_"):
+        # Adjust bet size
         if data == "slots_bet_-1":
             bet_size = max(0.25, bet_size - 1)
         elif data == "slots_bet_+1":
@@ -140,17 +165,19 @@ async def slots_button_handler(update, context):
              InlineKeyboardButton("Double", callback_data="slots_bet_double"),
              InlineKeyboardButton("Max", callback_data="slots_bet_max")],
             [InlineKeyboardButton("Combos", callback_data="slots_show_combos"),
-             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin")]
+             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin"),
+             InlineKeyboardButton("❌ Cancel", callback_data="slots_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             text,
             chat_id=chat_id,
-            message_id=game['prompt_message_id'],
+            message_id=game['message_id'],
             reply_markup=reply_markup
         )
 
     elif data == "slots_show_combos":
+        # Display winning combinations
         combos_text = (
             "Winning combinations:\n\n"
             "7️⃣7️⃣7️⃣ — 20x Jackpot!\n"
@@ -169,11 +196,12 @@ async def slots_button_handler(update, context):
         await context.bot.edit_message_text(
             combos_text,
             chat_id=chat_id,
-            message_id=game['prompt_message_id'],
+            message_id=game['message_id'],
             reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
     elif data == "slots_back":
+        # Return to main betting interface
         text = f"💰 Balance: ${balance:.2f}\n\nChoose the bet size:"
         keyboard = [
             [InlineKeyboardButton("-1", callback_data="slots_bet_-1"),
@@ -183,12 +211,13 @@ async def slots_button_handler(update, context):
              InlineKeyboardButton("Double", callback_data="slots_bet_double"),
              InlineKeyboardButton("Max", callback_data="slots_bet_max")],
             [InlineKeyboardButton("Combos", callback_data="slots_show_combos"),
-             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin")]
+             InlineKeyboardButton("🎰 Spin", callback_data="slots_spin"),
+             InlineKeyboardButton("❌ Cancel", callback_data="slots_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await context.bot.edit_message_text(
             text,
             chat_id=chat_id,
-            message_id=game['prompt_message_id'],
+            message_id=game['message_id'],
             reply_markup=reply_markup
         )
