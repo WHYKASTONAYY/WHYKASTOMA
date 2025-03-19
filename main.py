@@ -590,25 +590,32 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Unhandled update: {update}")
 
-# Game ownership check wrapper
+# Game ownership check wrapper with fix
 def with_game_ownership_check(handler, game_key=None, use_bot_data=False):
     async def wrapped_handler(update, context):
         query = update.callback_query
         await query.answer()
+        user_id = query.from_user.id
+        chat_id = query.message.chat_id
+
         if use_bot_data:
-            user_id = query.from_user.id
-            chat_id = query.message.chat_id
+            # Check for active game in bot_data (game phase)
             game_key_user = context.bot_data.get('user_games', {}).get((chat_id, user_id))
-            if not game_key_user:
-                await query.answer("No active game found!")
+            if game_key_user:
+                game = context.bot_data.get('games', {}).get(game_key_user)
+                if game:
+                    # Update message_id to ensure subsequent buttons work
+                    game['message_id'] = query.message.message_id
+                    await handler(update, context)
+                    return
+            # Check for setup phase in user_data (e.g., dice setup)
+            setup = context.user_data.get('dice_setup')
+            if setup and setup.get('message_id') == query.message.message_id:
+                await handler(update, context)
                 return
-            game = context.bot_data.get('games', {}).get(game_key_user)
-            if not game:
-                await query.answer("Game data missing!")
-                return
-            # Update message_id to the current message to ensure subsequent buttons work
-            game['message_id'] = query.message.message_id
+            await query.answer("No active game or setup found!")
         else:
+            # Handle games using user_data with game_key
             game = context.user_data.get(game_key)
             if not game:
                 await query.answer("No active game found!")
@@ -616,7 +623,7 @@ def with_game_ownership_check(handler, game_key=None, use_bot_data=False):
             if game.get('message_id') != query.message.message_id:
                 await query.answer("This message is not for your game!")
                 return
-        await handler(update, context)
+            await handler(update, context)
     return wrapped_handler
 
 # Flask app for webhooks
@@ -730,5 +737,5 @@ async def main():
     logger.info(f"Starting Flask app on port {port}...")
     app.run(host='0.0.0.0', port=port)
 
-if __name__ == "__main__":  
+if __name__ == "__main__":
     asyncio.run(main())
