@@ -691,7 +691,7 @@ async def main():
     # Other games keep the wrapper; ensure their state is set correctly
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
     application.add_handler(CallbackQueryHandler(basketball_button_handler, pattern="^basketball_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, 'coin_game'), pattern="^coin_"))
+    application.add_handler(CallbackQueryHandler(coin_button_handler, pattern="^coin_"))
     application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
     application.add_handler(CallbackQueryHandler(football_button_handler, pattern="^football_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(mine_button_handler, 'mine_game'), pattern="^mine_"))
