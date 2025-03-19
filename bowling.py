@@ -3,7 +3,7 @@ import asyncio
 import sqlite3
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
-from database import user_exists, get_user_balance, update_user_balance
+from database import user_exists, get_user_balance, update_user_balance  # Assuming get_user_by_username exists
 from utils import logger, send_with_retry
 
 # Evaluate each round with rolls in scoreboard
@@ -114,6 +114,10 @@ async def bowling_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_with_retry(context.bot, chat_id, text="Please register with /start.")
         return
 
+    if 'bowling_setup' in context.user_data:
+        await send_with_retry(context.bot, chat_id, text="You have an ongoing game setup. Please cancel it first.")
+        return
+
     if len(args) != 1:
         await send_with_retry(context.bot, chat_id, text="Usage: /bowl <amount>\nExample: /bowl 1")
         return
@@ -201,11 +205,18 @@ async def bowling_button_handler(update: Update, context: ContextTypes.DEFAULT_T
     chat_id = query.message.chat_id
     data = query.data
 
+    logger.info(f"Button clicked: {data} by user {user_id}")
+
     try:
         # Handle setup phase
         if 'bowling_setup' in context.user_data:
             setup = context.user_data['bowling_setup']
-            if setup['initiator'] != user_id or setup['message_id'] != query.message.message_id:
+            if setup['initiator'] != user_id:
+                logger.info(f"User {user_id} is not the initiator ({setup['initiator']})")
+                await query.answer("This is not your game setup!")
+                return
+            if setup['message_id'] != query.message.message_id:
+                logger.info(f"Message ID mismatch: setup {setup['message_id']}, query {query.message.message_id}")
                 await query.answer("This is not your game setup!")
                 return
 
@@ -299,17 +310,24 @@ async def bowling_button_handler(update: Update, context: ContextTypes.DEFAULT_T
         elif data.startswith("bowl_roll_"):
             game_key = context.bot_data.get('user_games', {}).get((chat_id, user_id))
             if not game_key:
+                logger.info(f"No game key for user {user_id} in chat {chat_id}")
                 await query.answer("No active game found!")
                 return
             game = context.bot_data.get('games', {}).get(game_key)
-            if not game or query.message.message_id != game.get('message_id'):
-                await query.answer("Game data missing or this is not your game message!")
+            if not game:
+                logger.info(f"Game not found for key {game_key}")
+                await query.answer("Game data missing!")
+                return
+            if query.message.message_id != game.get('message_id'):
+                logger.info(f"Message ID mismatch: game {game.get('message_id')}, query {query.message.message_id}")
+                await query.answer("This is not your game message!")
                 return
             if max(game['scores'].values()) >= game['points_to_win']:
                 await send_with_retry(context.bot, chat_id, text="The game has already ended!")
                 return
             player_key = 'player1' if game['player1'] == user_id else 'player2' if game['player2'] == user_id else None
             if not player_key:
+                logger.info(f"User {user_id} is not a player in game {game_key}")
                 return
             turn_round = int(data.split('_')[2])
             if turn_round != game['round_number']:
@@ -521,14 +539,11 @@ async def bowling_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
             await send_with_retry(context.bot, chat_id, text="Invalid username. Use @username.")
             return
         username = username[1:]
-        with sqlite3.connect('users.db') as conn:
-            c = conn.cursor()
-            c.execute("SELECT user_id FROM users WHERE username = ?", (username,))
-            result = c.fetchone()
-        if not result:
+        # Assuming database.py has a get_user_by_username function
+        challenged_user_id = get_user_by_username(username)  # Replace with actual function if available
+        if challenged_user_id is None:
             await send_with_retry(context.bot, chat_id, text=f"User @{username} not found.")
             return
-        challenged_user_id = result[0]
         if challenged_user_id == user_id:
             await send_with_retry(context.bot, chat_id, text="You can't challenge yourself!")
             return
@@ -560,3 +575,10 @@ async def bowling_text_handler(update: Update, context: ContextTypes.DEFAULT_TYP
         ]
         await send_with_retry(context.bot, chat_id, text=text, reply_markup=InlineKeyboardMarkup(keyboard))
         context.user_data['expecting_username'] = False
+
+# Note: If get_user_by_username is not in database.py, revert to original SQL:
+# with sqlite3.connect('users.db') as conn:
+#     c = conn.cursor()
+#     c.execute("SELECT user_id FROM users WHERE username = ?", (username,))
+#     result = c.fetchone()
+# challenged_user_id = result[0] if result else None
