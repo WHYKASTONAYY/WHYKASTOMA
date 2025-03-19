@@ -195,7 +195,7 @@ def get_currency_to_usd_price(currency):
 
 def format_expiration_time(expiration_date_str):
     try:
-        expiration_time = datetime.strptime(expiration_date_str, "%Y-%m-%dT%H:%M:%S.%fZ")
+        expiration_time = datetime.strptime(expiration_date_str, "%Y-%d-%mT%H:%M:%S.%fZ")
         now = datetime.utcnow()
         time_left = expiration_time - now
         minutes, seconds = divmod(int(time_left.total_seconds()), 60)
@@ -591,14 +591,31 @@ async def fallback_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"Unhandled update: {update}")
 
 # Game ownership check wrapper
-def with_game_ownership_check(handler, game_key):
+def with_game_ownership_check(handler, game_key=None, use_bot_data=False):
     async def wrapped_handler(update, context):
         query = update.callback_query
         await query.answer()
-        game = context.user_data.get(game_key)
-        if not game or game['message_id'] != query.message.message_id:
-            await query.answer("This is not your game!")
-            return
+        if use_bot_data:
+            user_id = query.from_user.id
+            chat_id = query.message.chat_id
+            game_key_user = context.bot_data.get('user_games', {}).get((chat_id, user_id))
+            if not game_key_user:
+                await query.answer("No active game found!")
+                return
+            game = context.bot_data.get('games', {}).get(game_key_user)
+            if not game:
+                await query.answer("Game data missing!")
+                return
+            # Update message_id to the current message to ensure subsequent buttons work
+            game['message_id'] = query.message.message_id
+        else:
+            game = context.user_data.get(game_key)
+            if not game:
+                await query.answer("No active game found!")
+                return
+            if game.get('message_id') != query.message.message_id:
+                await query.answer("This message is not for your game!")
+                return
         await handler(update, context)
     return wrapped_handler
 
@@ -685,13 +702,13 @@ async def main():
     application.add_handler(CommandHandler("housebal", housebal_command))
 
     # Register game button handlers with ownership check
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dice_button_handler, 'dice_game'), pattern="^dice_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dice_button_handler, use_bot_data=True), pattern="^dice_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, 'basketball_game'), pattern="^basketball_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(bowling_button_handler, 'bowl_game'), pattern="^bowl_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, 'coin_game'), pattern="^coin_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dart_button_handler, 'dart_game'), pattern="^dart_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(football_button_handler, 'football_game'), pattern="^football_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, use_bot_data=True), pattern="^basketball_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(bowling_button_handler, use_bot_data=True), pattern="^bowl_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, use_bot_data=True), pattern="^coin_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dart_button_handler, use_bot_data=True), pattern="^dart_"))
+    application.add_handler(CallbackQueryHandler(with_game_ownership_check(football_button_handler, use_bot_data=True), pattern="^football_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(mine_button_handler, 'mine_game'), pattern="^mine_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(predict_button_handler, 'predict_game'), pattern="^predict_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(roulette_button_handler, 'roulette_game'), pattern="^roul_"))
@@ -713,5 +730,5 @@ async def main():
     logger.info(f"Starting Flask app on port {port}...")
     app.run(host='0.0.0.0', port=port)
 
-if __name__ == "__main__":
+if __name__ == "__main__":  
     asyncio.run(main())
