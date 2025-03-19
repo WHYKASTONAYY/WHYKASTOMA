@@ -692,7 +692,7 @@ async def main():
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, 'basketball_game'), pattern="^basketball_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(coin_button_handler, 'coin_game'), pattern="^coin_"))
-    application.add_handler(CallbackQueryHandler(with_game_ownership_check(dart_button_handler, 'dart_game'), pattern="^dart_"))
+    application.add_handler(CallbackQueryHandler(dart_button_handler, pattern="^dart_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(football_button_handler, 'football_game'), pattern="^football_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(mine_button_handler, 'mine_game'), pattern="^mine_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(predict_button_handler, 'predict_game'), pattern="^predict_"))
