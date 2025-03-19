@@ -19,6 +19,9 @@ async def coin_command(update, context):
     args = context.args
 
     try:
+        # Prevent starting a new game if one is already active
+        if (chat_id, user_id) in context.bot_data.get('coin_games', {}):
+            raise ValueError("You are already in a game!")
         if len(args) != 1:
             raise ValueError("Usage: /coin <amount>\nExample: /coin 1")
         amount = float(args[0])
@@ -29,8 +32,14 @@ async def coin_command(update, context):
         balance = get_user_balance(user_id)
         if amount > balance:
             raise ValueError(f"Insufficient balance! You have ${balance:.2f}.")
-        context.user_data['coin_bet'] = amount
-        context.user_data['coin_initiator'] = user_id
+
+        # Initialize setup state
+        context.user_data['coin_setup'] = {
+            'initiator': user_id,
+            'bet': amount,
+            'state': 'choose_side',
+            'message_id': None
+        }
 
         keyboard = [
             [InlineKeyboardButton("Heads (Trump)", callback_data="coin_heads")],
@@ -38,7 +47,8 @@ async def coin_command(update, context):
             [InlineKeyboardButton("❌ Cancel", callback_data="coin_cancel")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await send_with_retry(context.bot, chat_id, "🪙 Choose the coin side:", reply_markup=reply_markup)
+        message = await send_with_retry(context.bot, chat_id, "🪙 Choose the coin side:", reply_markup=reply_markup)
+        context.user_data['coin_setup']['message_id'] = message.message_id
 
     except ValueError as e:
         await send_with_retry(context.bot, chat_id, str(e))
@@ -50,17 +60,20 @@ async def coin_button_handler(update, context):
     chat_id = query.message.chat_id
     data = query.data
 
+    setup = context.user_data.get('coin_setup')
+
     if data == "coin_cancel":
-        if 'coin_initiator' in context.user_data and context.user_data['coin_initiator'] == user_id:
-            del context.user_data['coin_initiator']
+        if setup and setup['initiator'] == user_id and setup['message_id'] == query.message.message_id:
+            del context.user_data['coin_setup']
             await query.edit_message_text("❌ Game setup cancelled.")
         return
 
     elif data in ["coin_heads", "coin_tails"]:
-        if 'coin_initiator' not in context.user_data or context.user_data['coin_initiator'] != user_id:
+        if not setup or setup['initiator'] != user_id or setup['message_id'] != query.message.message_id:
+            await query.answer("This is not your game setup!")
             return
-        context.user_data['coin_choice'] = "heads" if data == "coin_heads" else "tails"
-        bet = context.user_data['coin_bet']
+        context.user_data['coin_setup']['choice'] = "heads" if data == "coin_heads" else "tails"
+        bet = setup['bet']
         text = (
             "🪙 **Game confirmation**\n\n"
             "Game: Coinflip 🪙\n"
@@ -76,9 +89,10 @@ async def coin_button_handler(update, context):
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
 
     elif data == "coin_confirm":
-        if 'coin_initiator' not in context.user_data or context.user_data['coin_initiator'] != user_id:
+        if not setup or setup['initiator'] != user_id or setup['message_id'] != query.message.message_id:
+            await query.answer("This is not your game setup!")
             return
-        bet = context.user_data['coin_bet']
+        bet = setup['bet']
         username = query.from_user.username or "Someone"
         text = (
             f"🪙 {username} wants to play Coinflip!\n\n"
@@ -94,10 +108,11 @@ async def coin_button_handler(update, context):
         await query.edit_message_text(text=text, reply_markup=InlineKeyboardMarkup(keyboard))
 
     elif data == "coin_bot":
-        if 'coin_initiator' not in context.user_data or context.user_data['coin_initiator'] != user_id:
+        if not setup or setup['initiator'] != user_id or setup['message_id'] != query.message.message_id:
+            await query.answer("This is not your game setup!")
             return
-        bet = context.user_data['coin_bet']
-        choice = context.user_data['coin_choice']
+        bet = setup['bet']
+        choice = setup['choice']
         username = query.from_user.username or "Player"
         text = (
             "🪙 Match accepted!\n\n"
@@ -112,10 +127,12 @@ async def coin_button_handler(update, context):
             'choice': choice,
             'match_message_id': match_message.message_id
         }
+        del context.user_data['coin_setup']  # Clear setup state
 
     elif data == "coin_flip":
         game = context.bot_data['coin_games'].get((chat_id, user_id))
-        if not game:
+        if not game or query.message.message_id != game['match_message_id']:
+            await query.answer("This button is from an old game!")
             return
         await asyncio.sleep(2)  # Simulate flip delay
 
@@ -137,7 +154,7 @@ async def coin_button_handler(update, context):
             logger.error(f"Failed to send sticker: {e}")
 
         username = query.from_user.username or "Player"
-        if game['choice'] == coin_result:
+        if player_choice == coin_result:
             winnings = game['bet'] * 1.92
             new_balance = get_user_balance(user_id) + winnings - game['bet']
             update_user_balance(user_id, new_balance)
@@ -169,41 +186,53 @@ async def coin_button_handler(update, context):
             reply_to_message_id=game['match_message_id']
         )
 
-        if 'coin_initiator' in context.user_data:
-            del context.user_data['coin_initiator']
+        # Store bet for "Play Again" or "Double" before clearing
+        context.user_data['coin_setup'] = {'bet': game['bet']}
         del context.bot_data['coin_games'][(chat_id, user_id)]
 
     elif data == "coin_restart":
-        if 'coin_bet' in context.user_data:
-            bet = context.user_data['coin_bet']
+        bet = context.user_data.get('coin_setup', {}).get('bet')
+        if bet:
             balance = get_user_balance(user_id)
             if bet > balance:
                 await send_with_retry(context.bot, chat_id, f"Insufficient balance! You have ${balance:.2f}.")
                 return
-            context.user_data['coin_initiator'] = user_id
+            context.user_data['coin_setup'] = {
+                'initiator': user_id,
+                'bet': bet,
+                'state': 'choose_side',
+                'message_id': None
+            }
             keyboard = [
                 [InlineKeyboardButton("Heads (Trump)", callback_data="coin_heads")],
                 [InlineKeyboardButton("Tails (Dice Logo)", callback_data="coin_tails")],
                 [InlineKeyboardButton("❌ Cancel", callback_data="coin_cancel")]
             ]
-            await send_with_retry(context.bot, chat_id, f"🪙 Starting a new game with ${bet:.2f}. Choose the coin side:", reply_markup=InlineKeyboardMarkup(keyboard))
+            message = await send_with_retry(context.bot, chat_id, f"🪙 Starting a new game with ${bet:.2f}. Choose the coin side:", reply_markup=InlineKeyboardMarkup(keyboard))
+            context.user_data['coin_setup']['message_id'] = message.message_id
         else:
             await send_with_retry(context.bot, chat_id, "No previous game found. Use /coin <amount> to start a new game.")
 
     elif data == "coin_double":
-        if 'coin_bet' in context.user_data:
-            bet = context.user_data['coin_bet'] * 2
+        bet = context.user_data.get('coin_setup', {}).get('bet')
+        if bet:
+            bet *= 2
             balance = get_user_balance(user_id)
             if bet > balance:
                 await send_with_retry(context.bot, chat_id, f"Insufficient balance to double your bet! You have ${balance:.2f}.")
                 return
-            context.user_data['coin_bet'] = bet
-            context.user_data['coin_initiator'] = user_id
+            context.user_data['coin_setup'] = {
+                'initiator': user_id,
+                'bet': bet,
+                'state': 'choose_side',
+                'message_id': None
+            }
             keyboard = [
                 [InlineKeyboardButton("Heads (Trump)", callback_data="coin_heads")],
                 [InlineKeyboardButton("Tails (Dice Logo)", callback_data="coin_tails")],
                 [InlineKeyboardButton("❌ Cancel", callback_data="coin_cancel")]
             ]
-            await send_with_retry(context.bot, chat_id, f"🪙 Doubling your bet to ${bet:.2f}. Choose the coin side:", reply_markup=InlineKeyboardMarkup(keyboard))
+            message = await send_with_retry(context.bot, chat_id, f"🪙 Doubling your bet to ${bet:.2f}. Choose the coin side:", reply_markup=InlineKeyboardMarkup(keyboard))
+            context.user_data['coin_setup']['message_id'] = message.message_id
         else:
             await send_with_retry(context.bot, chat_id, "No previous bet found. Use /coin <amount> to start a new game.")
