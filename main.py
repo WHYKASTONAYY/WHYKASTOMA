@@ -685,7 +685,9 @@ async def main():
     application.add_handler(CommandHandler("housebal", housebal_command))
 
     # Register game button handlers with ownership check
-    application.add_handler(CallbackQueryHandler(dice_button_handler, pattern="^dice_"))  # Wrapper removed for dice
+    # Note: Dice handler has no wrapper, assuming it manages state internally
+    application.add_handler(CallbackQueryHandler(dice_button_handler, pattern="^dice_"))
+    # For bowling and other games, keep the wrapper; ensure game state is set in respective game files
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(tower_button_handler, 'tower_game'), pattern="^tower_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(basketball_button_handler, 'basketball_game'), pattern="^basketball_"))
     application.add_handler(CallbackQueryHandler(with_game_ownership_check(bowling_button_handler, 'bowling_game'), pattern="^bowl_"))
